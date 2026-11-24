@@ -1,58 +1,58 @@
 # dsh-approval-notify
 
-A DeepSeek Harness (DSH) plugin that raises a macOS Notification Center banner at the four moments an agent stops and waits for you. English | [中文](README.zh.md)
+一个 DeepSeek Harness（DSH）插件：Agent 停下来等你时，弹一条 macOS 通知中心横幅。中文 | [English](README.en.md)
 
-| Event | Source | Default |
+| 时刻 | 事件源 | 默认 |
 | --- | --- | --- |
-| **Approval** | `approval/request` — a tool call needs permission; only exists while the permission preset asks (read-only / workspace-write) | on |
-| **Question** | `user-questions/request` — the agent calls `ask_user_question` | on |
-| **Finish** | `api-session/status` — a session stops running and waits for you; skipped while DSH is frontmost | on |
-| **Error** | `api-session/error` — a session or turn failed | on |
+| **审批** | `approval/request` —— 工具调用需要授权；只在权限模式的审批为「询问」（只读 / 工作区写入）时出现 | 开 |
+| **提问** | `user-questions/request` —— Agent 调用 `ask_user_question` | 开 |
+| **完成** | `api-session/status` —— 会话跑完一轮开始等你；DSH 在前台时跳过 | 开 |
+| **出错** | `api-session/error` —— 会话或回合失败 | 开 |
 
-The approval and question events are Cordis waterfalls: the plugin listens, announces, and always delegates with `next()`. It never answers, and a missing banner can never block a tool call.
+审批与提问是 Cordis waterfall：插件只旁听、只提醒，然后永远 `next()`。它不会替你做决定，横幅发不出去也不可能卡住工具调用。
 
-## Install
+## 安装
 
-Requires macOS and DSH `>=0.2.2-rc.5 <0.3.0`.
+需要 macOS 和 DSH `>=0.2.2-rc.5 <0.3.0`。
 
 ```sh
 dsh plugin --profile <profile> add github:wphhyan/dsh-approval-notify
 ```
 
-Then enable the bundle, and restart the desktop app (⌘Q) so the Host half loads its module generation. On desktop the profile is usually `desktop`; find it in **Settings → Plugins**.
+然后启用该 bundle，并 **⌘Q 重启桌面端**（Host 半边的 JS 模块只在重启后换成新的一份）。桌面端的 profile 通常是 `desktop`。
 
-The market install is the same package: **Plugins → Discover**, search for `dsh-approval-notify`, install, enable, restart.
+插件市场里是同一个包：**插件 → 发现**，搜索 `dsh-approval-notify`，安装、启用、重启。
 
-## What you get
+## 它会做什么
 
-- **Banner with the tone attached.** `display notification … sound name` hands both to the system, so the tone is never truncated by a plugin-side timeout and Focus/mute rules apply exactly as they do for any other app: approval Glass, question Ping, finish Tink, error Basso.
-- **Quiet when it should be.** The finish reminder is skipped while DSH is frontmost; one finish reminder per session per 5 s; error reminders are limited to one per 5 minutes, so an automation that fails every minute cannot fill the notification center; the same `callId` is announced once per 3 s.
-- **Settings page** under **Settings → Plugins → 审批提醒**: seven switches (master, approval, question, finish, error, sound, skip-while-focused), four counters, the last event, and four buttons — **Send test notification**, **Self-check**, **Open system notification settings**, **Refresh**.
-- **A tool for your agent**: `approval_notify` with `status`, `test`, and `diagnose`.
+- **提示音跟着横幅走**：`display notification … sound name` 把横幅和声音一起交给系统，提示音不会被插件侧的超时掐断，专注模式与静音照常生效。审批 Glass、提问 Ping、完成 Tink、出错 Basso。
+- **该安静时安静**：DSH 在前台时跳过「完成」提醒；同一会话 5 秒内只有一条完成提醒；「出错」5 分钟最多一条，每分钟都失败的定时任务刷不爆通知中心；同一 `callId` 3 秒内只提醒一次。
+- **设置页**在 **设置 → 插件 → 审批提醒**：七个开关（总开关、审批、提问、完成、出错、提示音、前台跳过）、四类计数、最近一次事件，以及四个按钮——**发送测试通知**、**自检**、**打开系统通知设置**、**刷新**。
+- **给 Agent 的工具**：`approval_notify`，支持 `status`、`test`、`diagnose`。
 
-## Delivery and limitations
+## 送达与限制
 
-- The channel is `osascript display notification`, so macOS attributes the banner to **Script Editor** (「脚本编辑器」) — not to DSH. That is AppleScript's standard behaviour and the plugin's only channel that needs no third-party binary.
-- Exit code 0 means the notification server **accepted the request**, not that you saw it. Focus modes, muting Script Editor in System Settings, or a locked screen drop it silently, so the plugin reports "submitted" instead of "seen".
-- The banner cannot be clicked; AppleScript notifications have no actions.
-- macOS only. On other platforms the tool reports the channel as unavailable.
-- Approval reminders never appear under the `full-access` preset: it rejects approval-requiring calls outright, so no request exists to announce. Switch to read-only or workspace-write to exercise that channel.
-- The plugin writes only its own status counters (`plugin-data/dsh-approval-notify/`) and its own volatile config fields. It never edits the profile patch file directly.
+- 渠道是 `osascript display notification`，所以 macOS 会把横幅归到 **「脚本编辑器 / Script Editor」** 名下，而不是 DSH。这是 AppleScript 的标准行为，也是本插件唯一不需要第三方二进制的通道。
+- 退出码 0 只代表通知服务**接受了请求**，不代表你看见了：专注模式、在系统设置里把「脚本编辑器」静音、锁屏，都会静默丢弃。插件如实写"已提交"，不假装"已送达"。
+- 横幅不能点击跳转：AppleScript 通知没有动作。
+- 仅 macOS。其他平台上工具会报告渠道不可用。
+- 在「完全访问」权限模式下永远不会触发审批提醒：它直接拒绝需要审批的操作，根本不存在要广播的请求。要验证这条通道，切到「只读」或「工作区写入」。
+- 插件只写自己的计数（`plugin-data/dsh-approval-notify/`）和自己的 volatile 配置字段，不直接改 profile 的 patch 文件。
 
-## Troubleshooting
+## 排错
 
-1. **Settings → Plugins → 审批提醒 → Send test notification.** If a banner appears, the channel works.
-2. **Self-check** also reports the frontmost app and the tone result.
-3. **Open system notification settings** jumps to the macOS pane; check that **Script Editor** is allowed and that a Focus mode is not on.
-4. Check `~/.dsh/profiles/<profile>/plugin-data/dsh-approval-notify/debug.log` for `notify(...)` lines, and `state.json` for the counters.
+1. **设置 → 插件 → 审批提醒 → 发送测试通知**：有横幅说明通道可用。
+2. **自检**会额外报告前台应用与提示音结果。
+3. **打开系统通知设置**跳到 macOS 面板，确认「脚本编辑器」未被静音、没开专注模式。
+4. 看 `~/.dsh/profiles/<profile>/plugin-data/dsh-approval-notify/debug.log` 里的 `notify(...)` 行，以及 `state.json` 的计数。
 
-## Implementation
+## 实现
 
-- `lib/notify.js` — AppleScript generation/escaping, `osascript` execution, `afplay` fallback for a rejected script.
-- `lib/system.js` — frontmost app through `lsappinfo` (1 s cache), opening the notification settings pane.
-- `lib/state.js` — atomic counters and last event under `plugin-data`, tolerating an older state document.
-- `client.js` — the settings page, reading and writing this plugin's settings namespace through `ctx.remote.settings`.
+- `lib/notify.js` —— AppleScript 生成与转义、`osascript` 执行、脚本被拒时用 `afplay` 兜底。
+- `lib/system.js` —— 用 `lsappinfo` 判断前台应用（1 秒缓存）、打开系统通知面板。
+- `lib/state.js` —— `plugin-data` 下的原子计数与最近事件，兼容旧版状态文档。
+- `client.js` —— 设置页，通过 `ctx.remote.settings` 读写本插件的设置命名空间。
 
-## License
+## 许可
 
 MIT
