@@ -72,11 +72,14 @@ export const Config = z.object({
     .description('只读：渠道、前台应用、声音来源与排查提示。'),
 })
 
-/** How long one repeated call id is treated as already announced. */
+/** How long one repeated call id is treated as already announced (3 s). */
 const DEDUPE_MS = 3000
 
 /** A Session that flaps running→idle→running keeps one finish reminder per interval. */
 const FINISH_QUIET_MS = 5000
+
+/** A broken automation can fail every minute; one error banner per window is enough. */
+const ERROR_QUIET_MS = 5 * 60 * 1000
 
 /** Which counter a delivered notification advances. */
 const COUNTERS = {
@@ -125,8 +128,8 @@ export function apply(ctx, config) {
   const labels = new Map()
   /** @type {Map<string, number>} Session id → when it started running. */
   const runningSince = new Map()
-  /** @type {Map<string, number>} Session id → last finish reminder. */
-  const lastFinish = new Map()
+  /** Last error banner, so a failing automation cannot spam the notification center. */
+  let lastErrorNoticeAt = 0
   /** Counters are read from disk once per activation and kept in memory. */
   let state = readState()
   let lastBanner = ''
@@ -174,14 +177,20 @@ export function apply(ctx, config) {
     const entry = ctx.fiber?.entry
     const editor = ctx.get('configEditor')
     if (entry === undefined || editor === undefined) return false
-    try {
-      await outsideHmr(() => editor.edit(entry, current => ({ ...current, ...patch })))
-      trace(`config write ok: ${JSON.stringify(patch)}`)
-      return true
-    } catch (error) {
-      trace(`config write failed: ${error?.message ?? String(error)}`)
-      return false
+    // The profile-wide writer lock is held while pnpm touches the profile
+    // (plugin install, lockfile rewrite); a single attempt loses that race and
+    // would leave the settings page showing a stale status. Retry with backoff.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await outsideHmr(() => editor.edit(entry, current => ({ ...current, ...patch })))
+        trace(`config write ok: ${JSON.stringify(patch)}`)
+        return true
+      } catch (error) {
+        trace(`config write attempt ${String(attempt + 1)} failed: ${error?.message ?? String(error)}`)
+        if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 400 * (attempt + 1) ** 2))
+      }
     }
+    return false
   }
 
   /** Active notification sources, for the status line. */
@@ -246,15 +255,17 @@ export function apply(ctx, config) {
     lastBanner = outcome.banner === 'submitted' ? `已提交给通知中心（${clock(new Date().toISOString())}）` : outcome.banner
     lastError = outcome.ok ? '' : String(outcome.banner)
     trace(`notify(${kind}) banner=${outcome.banner} sound=${outcome.sound} title=${message.title}`)
-    if (outcome.ok) {
-      const next = {
+    const counter = COUNTERS[kind]
+    // A self-check exercises the channel; it must not overwrite the last real
+    // event or move a counter that stands for "the agent waited for you".
+    if (outcome.ok && counter !== undefined) {
+      state = writeState({
         lastKind: kind,
         lastAt: new Date().toISOString(),
         lastLabel: message.subtitle ?? truncate(message.body, 24),
         lastBanner,
-      }
-      const counter = COUNTERS[kind]
-      state = writeState(counter === undefined ? next : { ...next, [counter]: Number(state[counter] ?? 0) + 1 })
+        [counter]: Number(state[counter] ?? 0) + 1,
+      })
     }
     return outcome.ok
       ? { ok: true, banner: outcome.banner, sound: outcome.sound }
@@ -373,6 +384,12 @@ export function apply(ctx, config) {
     const id = String(sessionId ?? '')
     if (id === '') return
     if (suppressed(`error:${id}`)) return
+    const now = Date.now()
+    if (now - lastErrorNoticeAt < ERROR_QUIET_MS) {
+      lastSkip = `${clock(new Date(now).toISOString())} 的「出错」提醒已跳过（同类提醒 5 分钟内只发一次）`
+      return
+    }
+    lastErrorNoticeAt = now
     const label = labels.get(id) ?? id.slice(0, 12)
     const text = truncate(typeof message === 'string' && message !== '' ? message : '会话出错，需要你看一下。')
     void send('出错', { title: 'DSH 会话出错', subtitle: truncate(label, 60), body: text }, TONES.error)

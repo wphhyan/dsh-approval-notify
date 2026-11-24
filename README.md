@@ -21,7 +21,7 @@ Agent 停下来等你的四个时刻，弹一条 macOS 通知中心横幅：
 
 - 渠道是 `osascript display notification`，macOS 会把它归到 **「脚本编辑器 / Script Editor」** 名下，横幅图标与名称都是它，不是 DSH。这是 AppleScript 的标准行为，也是本插件唯一不依赖第三方二进制的通道。
 - `osascript` 退出码 0 只代表**请求被通知中心接受**，不代表你一定看见了：专注模式、系统设置里把「脚本编辑器」静音、或屏幕已进入勿扰，都会静默丢弃。插件把这一层如实写成"已提交"，不假装"已送达"。
-- 不清理、不合并、不排队：每个事件一条横幅；同一 `callId` 3 秒内只提醒一次，同一会话的"完成"提醒 5 秒内只发一次。
+- 不清理、不合并、不排队：每个事件一条横幅。同一 `callId` 3 秒内只提醒一次；同一会话的「完成」提醒 5 秒内只发一次；「出错」提醒 5 分钟内只发一次——一个每分钟都失败的定时任务不会把通知中心刷爆。
 - 平台：仅 macOS；其他平台工具会报告渠道不可用。
 - 横幅不能点击跳转。AppleScript 通知没有动作，点它只会打开通知中心。
 
@@ -55,4 +55,4 @@ Agent 停下来等你的四个时刻，弹一条 macOS 通知中心横幅：
 - `lib/notify.js`：AppleScript 生成与转义、`osascript` 执行、失败时用 `afplay` 兜底播 Glass；
 - `lib/system.js`：`lsappinfo` 判断前台应用（1 秒缓存）、打开系统通知面板；
 - `lib/state.js`：计数与最近事件的原子写入，`plugin-data` 定位兼容 `DSH_PROFILE_DIR` 与工作目录；
-- 配置写回走 `configEditor` + HMR `exit` 事务，不直接改 profile 的 patch 文件。
+- 配置写回走 `configEditor` + HMR `exit` 事务，不直接改 profile 的 patch 文件；profile 被 pnpm 占用写锁时按 400ms / 1.6s 退避重试两次。
