@@ -1,5 +1,5 @@
 window.__ModuleLoader__.load({
-  id: '@local/dsh-approval-notify',
+  id: 'dsh-approval-notify',
   factory(require) {
     const React = require('react')
     const h = React.createElement
