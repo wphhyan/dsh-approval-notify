@@ -7,6 +7,7 @@ Agent 停下来等你时，弹一条 macOS 通知中心横幅：工具审批、a
 ![platform](https://img.shields.io/badge/platform-macOS-000000)
 ![DSH](https://img.shields.io/badge/DSH-%E2%89%A50.2.2--rc.5-4B6BFB)
 ![license](https://img.shields.io/badge/license-MIT-green)
+![CI](https://github.com/wphhyan/dsh-approval-notify/actions/workflows/ci.yml/badge.svg)
 
 | 时刻 | 事件源 | 默认 |
 | --- | --- | --- |
@@ -62,6 +63,15 @@ dsh plugin --profile <profile> add github:wphhyan/dsh-approval-notify
 - `lib/system.js` —— 用 `lsappinfo` 判断前台应用（1 秒缓存）、打开系统通知面板。
 - `lib/state.js` —— `plugin-data` 下的原子计数与最近事件，兼容旧版状态文档。
 - `client.js` —— 设置页，通过 `ctx.remote.settings` 读写本插件的设置命名空间。
+
+## 开发
+
+```sh
+npm run check   # node --check 语法检查
+npm test        # node:test：纯函数、状态文档、清单与 helper 校验
+```
+
+`helper/build.sh` 用 clang 重新编译 universal 的 `DSH Notify`（需要 macOS 与 Xcode 命令行工具）。CI 在 Ubuntu 上跑语法检查、单元测试、以及 `npm pack` 的发布文件清单校验。
 
 ## 许可
 

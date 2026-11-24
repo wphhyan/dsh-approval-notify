@@ -7,6 +7,7 @@ Raises a macOS Notification Center banner at the four moments an agent stops and
 ![platform](https://img.shields.io/badge/platform-macOS-000000)
 ![DSH](https://img.shields.io/badge/DSH-%E2%89%A50.2.2--rc.5-4B6BFB)
 ![license](https://img.shields.io/badge/license-MIT-green)
+![CI](https://github.com/wphhyan/dsh-approval-notify/actions/workflows/ci.yml/badge.svg)
 
 | Event | Source | Default |
 | --- | --- | --- |
@@ -61,6 +62,15 @@ The market install is the same package: **Plugins → Discover**, search for `ds
 - `lib/system.js` — frontmost app through `lsappinfo` (1 s cache), opening the notification settings pane.
 - `lib/state.js` — atomic counters and last event under `plugin-data`, tolerating an older state document.
 - `client.js` — the settings page, reading and writing this plugin's settings namespace through `ctx.remote.settings`.
+
+## Development
+
+```sh
+npm run check   # syntax check with node --check
+npm test        # node:test: pure functions, state document, manifest, helper
+```
+
+`helper/build.sh` rebuilds the universal `DSH Notify` helper with clang (macOS plus the Xcode command line tools). CI runs the syntax check, the unit tests, and a `npm pack` file-list assertion on Ubuntu.
 
 ## License
 

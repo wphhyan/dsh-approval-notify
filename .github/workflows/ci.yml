@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Syntax check
+        run: npm run check
+      - name: Unit tests
+        run: npm test
+      - name: Verify the published file list
+        run: |
+          npm pack --json --pack-destination /tmp > /tmp/pack.json
+          node - <<'NODE'
+          const fs = require('node:fs')
+          const files = JSON.parse(fs.readFileSync('/tmp/pack.json', 'utf8'))[0].files.map(f => f.path)
+          const required = [
+            'index.js',
+            'client.js',
+            'lib/notify.js',
+            'lib/state.js',
+            'lib/system.js',
+            'cordis.patch.yml',
+            'icon.svg',
+            'locale/zh.json',
+            'locale/en.json',
+            'README.md',
+            'README.en.md',
+            'LICENSE',
+            'helper/DSHNotify.app/Contents/MacOS/dsh-notify',
+            'helper/dsh-notify.m',
+          ]
+          const missing = required.filter(file => !files.includes(file))
+          if (missing.length > 0) {
+            console.error('missing from the package:', missing)
+            process.exit(1)
+          }
+          console.log(`${files.length} files packed, all required files present`)
+          NODE

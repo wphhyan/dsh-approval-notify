@@ -84,8 +84,12 @@ const DEDUPE_MS = 3000
 /** A Session that flaps running→idle→running keeps one finish reminder per interval. */
 const FINISH_QUIET_MS = 5000
 
-/** A broken automation can fail every minute; one error banner per window is enough. */
-const ERROR_QUIET_MS = 5 * 60 * 1000
+/** One error banner per Session per window. */
+const ERROR_SESSION_QUIET_MS = 5 * 60 * 1000
+
+/** A global cap keeps unrelated failures from flooding the notification center. */
+const ERROR_GLOBAL_WINDOW_MS = 10 * 60 * 1000
+const ERROR_GLOBAL_MAX = 3
 
 /** Session ids created by the scheduling plugin; they are runs, not human waits. */
 const SCHEDULED_PREFIX = 'dsh-automation-session-'
@@ -148,8 +152,8 @@ export function apply(ctx, config) {
   const runningSince = new Map()
   /** @type {Map<string, number>} Session id → when its last error was seen. */
   const lastErrorAt = new Map()
-  /** Last error banner, so a failing automation cannot spam the notification center. */
-  let lastErrorNoticeAt = 0
+  /** Error banners inside the global window, so failures cannot spam the center. */
+  const errorNoticeTimes = []
   /** Counters are read from disk once per activation and kept in memory. */
   let state = readState()
   let lastBanner = ''
@@ -158,6 +162,8 @@ export function apply(ctx, config) {
   let lastChannel = ''
   let lastHelper = ''
   let busy = false
+  let pendingRefresh = ''
+  let lastPublishAt = 0
   let timer
 
   /** @param {string} field @returns {unknown} live value of an ordinary or volatile field. */
@@ -289,14 +295,21 @@ export function apply(ctx, config) {
 
   /**
    * Publish the current status into the plugin's own config fields.
+   *
+   * Event-driven publishes are throttled so a busy Session cannot rewrite the
+   * profile patch every few seconds; explicit actions (a switch, a test, a
+   * self-check) pass `force` and land immediately.
    * @param {string} [message] - extra sentence appended to the status line.
+   * @param {{ force?: boolean }} [options] - bypass the throttle.
    * @returns {Promise<void>} completion.
    */
-  const publish = async message => {
+  const publish = async (message, options = {}) => {
     const status = `${statusLine()}${message === undefined || message === '' ? '' : ` ${message}`}`
     const details = detailLine()
     if (read('status') === status && read('details') === details) return
-    await writeConfig({ status, details })
+    if (options.force !== true && Date.now() - lastPublishAt < 15000) return
+    const written = await writeConfig({ status, details })
+    if (written) lastPublishAt = Date.now()
   }
 
   /**
@@ -336,8 +349,9 @@ export function apply(ctx, config) {
     trace(`notify(${kind}) banner=${outcome.banner} sound=${outcome.sound} title=${message.title}`)
     const counter = COUNTERS[kind]
     // A self-check exercises the channel; it must not overwrite the last real
-    // event or move a counter that stands for "the agent waited for you".
-    if (outcome.ok && counter !== undefined) {
+    // event or move a counter that stands for "the agent waited for you". A
+    // delivery still waiting for the notification server does not count either.
+    if (outcome.ok && outcome.confirmed !== false && counter !== undefined) {
       state = writeState({
         lastKind: kind,
         lastAt: new Date().toISOString(),
@@ -345,10 +359,11 @@ export function apply(ctx, config) {
         lastBanner,
         [counter]: Number(state[counter] ?? 0) + 1,
       })
+      void publish().catch(error => trace(`publish after notify failed: ${error?.stack ?? String(error)}`))
     }
     return outcome.ok
-      ? { ok: true, banner: outcome.banner, sound: outcome.sound, channel: outcome.channel, helper: outcome.helper }
-      : { ok: false, banner: outcome.banner, sound: outcome.sound, channel: outcome.channel, helper: outcome.helper, error: lastError }
+      ? { ok: true, banner: outcome.banner, sound: outcome.sound, channel: outcome.channel, helper: outcome.helper, confirmed: outcome.confirmed }
+      : { ok: false, banner: outcome.banner, sound: outcome.sound, channel: outcome.channel, helper: outcome.helper, confirmed: outcome.confirmed, error: lastError }
   }
 
   /**
@@ -470,15 +485,23 @@ export function apply(ctx, config) {
     const id = String(sessionId ?? '')
     if (id === '') return
     if (isScheduledRun(id) && read('scheduled') !== true) return
+    const seenAt = lastErrorAt.get(id) ?? 0
     lastErrorAt.set(id, Date.now())
     cap(lastErrorAt)
     if (suppressed(`error:${id}`)) return
     const now = Date.now()
-    if (now - lastErrorNoticeAt < ERROR_QUIET_MS) {
-      lastSkip = `${clock(new Date(now).toISOString())} 的「出错」提醒已跳过（同类提醒 5 分钟内只发一次）`
+    if (now - seenAt < ERROR_SESSION_QUIET_MS) {
+      lastSkip = '该会话 5 分钟内的「出错」提醒已跳过'
       return
     }
-    lastErrorNoticeAt = now
+    const recent = errorNoticeTimes.filter(at => now - at < ERROR_GLOBAL_WINDOW_MS)
+    errorNoticeTimes.length = 0
+    errorNoticeTimes.push(...recent)
+    if (errorNoticeTimes.length >= ERROR_GLOBAL_MAX) {
+      lastSkip = `出错提醒已达上限（10 分钟内 ${ERROR_GLOBAL_MAX} 条），本次已跳过`
+      return
+    }
+    errorNoticeTimes.push(now)
     const label = labels.get(id) ?? id.slice(0, 12)
     const text = truncate(typeof message === 'string' && message !== '' ? message : '会话出错，需要你看一下。')
     void send('出错', { title: 'DSH 会话出错', subtitle: truncate(label, 60), body: text }, TONES.error)
@@ -553,7 +576,9 @@ export function apply(ctx, config) {
       ...outcome,
       message: outcome.ok
         ? (outcome.channel === 'helper'
-          ? '测试通知已提交（DSH Notify 横幅）。若没有横幅，检查系统设置里 DSH Notify 的通知权限与专注模式；点横幅把 DSH 切到前台。'
+          ? (outcome.confirmed === false
+            ? '测试通知已提交（DSH Notify 横幅），系统尚未确认；若没有横幅，检查 DSH Notify 的通知权限与专注模式。'
+            : '测试通知已提交（DSH Notify 横幅）。若没有横幅，检查系统设置里 DSH Notify 的通知权限与专注模式；点横幅把 DSH 切到前台。')
           : (outcome.helper === 'unauthorized'
             ? '测试通知走了兼容通道：DSH Notify 还没授权，点「请求通知授权」允许后会切回可点击的横幅。'
             : outcome.helper === 'denied'
@@ -580,7 +605,10 @@ export function apply(ctx, config) {
    * @returns {Promise<void>} completion.
    */
   const refresh = async reason => {
-    if (busy) return
+    if (busy) {
+      pendingRefresh = reason
+      return
+    }
     busy = true
     try {
       if (read('testNow') === true) {
@@ -620,11 +648,16 @@ export function apply(ctx, config) {
         })
         return
       }
-      await publish()
+      await publish(undefined, { force: true })
     } catch (error) {
       trace(`refresh(${reason}) failed: ${error?.stack ?? String(error)}`)
     } finally {
       busy = false
+      if (pendingRefresh !== '') {
+        const queued = pendingRefresh
+        pendingRefresh = ''
+        schedule(queued)
+      }
     }
   }
 
