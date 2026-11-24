@@ -34,9 +34,10 @@ The market install is the same package: **Plugins → Discover**, search for `ds
 
 - **Clickable banners.** A ~600 KB `DSH Notify` helper app ships with the plugin (source in `helper/`, reproducible build script) and posts the banner from its own identity: clicking it brings the DSH desktop app to the front (using the app's own `dsh://open` when it is not running), or opens the page when only `dsh web` runs. The notification permission is requested only by the settings page's request button.
 - **Banner with the tone attached.** `display notification … sound name` / `--sound` hands both to the system, so the tone is never truncated by a plugin-side timeout and Focus/mute rules apply exactly as they do for any other app: approval Glass, question Ping, finish Tink, error Basso.
-- **Quiet when it should be.** The finish reminder is skipped while DSH is frontmost; one finish reminder per session per 5 s; sessions that finish within a 4 s window are merged into one banner (subtitle "N sessions", counters still add up per session); error reminders are limited to one per 5 minutes, so an automation that fails every minute cannot fill the notification center; the same `callId` is announced once per 3 s.
-- **Settings page** under **Settings → Plugins → 审批提醒**: nine switches (master, approval, question, finish, error, sound, skip-while-focused, clickable, also notify scheduled runs), four counters, the last event, and five buttons — **Request notification permission**, **Send test notification**, **Self-check**, **Open system notification settings**, **Refresh**.
-- **A tool for your agent**: `approval_notify` with `status`, `test`, and `diagnose`.
+- **Quiet when it should be.** Finish reminders can follow the frontmost app or, in away-only mode, the system idle time (60s of no input), which is more accurate when the GUI runs in a browser; one finish reminder per session per 5 s; sessions that finish within a 4 s window are merged into one banner (subtitle "N sessions", counters still add up per session); error reminders are limited to one per 5 minutes, so an automation that fails every minute cannot fill the notification center; the same `callId` is announced once per 3 s.
+- **Settings page** under **Settings → Plugins → 审批提醒**: ten switches (master, approval, question, finish, error, sound, skip-while-focused, away-only via idle time, clickable, also notify scheduled runs), four counters, the last event, and five buttons — **Request notification permission**, **Send test notification**, **Self-check**, **Open system notification settings**, **Refresh**.
+- **A tool for your agent**: `dsh_approval_notify` with `status`, `test`, and `diagnose`; the old `approval_notify` name stays as an alias so existing prompts keep working.
+- **Copy follows the UI language**: the settings page registers Chinese and English dictionaries with the DSH locale service, and the Host picks its notification, status and tool text from the `clientLocale` the page writes.
 
 ## Delivery and limitations
 
@@ -72,6 +73,8 @@ npm test        # node:test: pure functions, state document, manifest, helper
 ```
 
 `helper/build.sh` rebuilds the universal `DSH Notify` helper with clang (macOS plus the Xcode command line tools). CI runs the syntax check, the unit tests, and a `npm pack` file-list assertion on Ubuntu.
+
+Helper modes: `--status` prints the notification authorization (0 not determined, 1 denied, 2 allowed), `--request` asks once, `--activate-now --focus-url dsh://open` only focuses the window, and a no-argument launch behaves like clicking an older banner. The web GUI URL travels in the `DSH_NOTIFY_URL` environment variable, never in the process arguments.
 
 ## License
 

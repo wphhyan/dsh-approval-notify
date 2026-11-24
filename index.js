@@ -15,14 +15,16 @@
  */
 
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 import { TONES, deliver, helperAuthorization, helperAvailable, isSupported, requestAuthorization, truncate } from './lib/notify.js'
 import { readState, trace, writeState } from './lib/state.js'
-import { DSH_BUNDLE_ID, dshIsFrontmost, frontmost, openNotificationSettings } from './lib/system.js'
+import { fmt, texts } from './lib/messages.js'
+import { DSH_BUNDLE_ID, dshIsFrontmost, frontmost, idleSeconds, openNotificationSettings } from './lib/system.js'
 
 export const name = 'approval-notify'
 
-export const inject = ['tools', 'configEditor']
+export const inject = ['tools']
 
 /**
  * Load the schema factory.
@@ -37,10 +39,24 @@ async function loadSchema() {
     return (await import('@deepseek-ai/schemastery')).default
   } catch {}
   const require = createRequire(import.meta.url)
-  const anchor = process.env.DSH_INSTALL_DIR ?? ''
-  const resolved = require.resolve('@deepseek-ai/schemastery', { paths: [anchor] })
-  const loaded = require(resolved)
-  return loaded.default ?? loaded
+  const anchors = [
+    process.env.DSH_INSTALL_DIR,
+    process.env.DSH_HOME,
+    path.dirname(process.execPath),
+    process.cwd(),
+    path.dirname(fileURLToPath(import.meta.url)),
+  ].filter(value => typeof value === 'string' && value !== '')
+  let lastError
+  for (const anchor of anchors) {
+    try {
+      const resolved = require.resolve('@deepseek-ai/schemastery', { paths: [anchor] })
+      const loaded = require(resolved)
+      return loaded.default ?? loaded
+    } catch (error) {
+      lastError = error
+    }
+  }
+  throw new Error(`@deepseek-ai/schemastery is not resolvable; set DSH_INSTALL_DIR (${lastError?.message ?? 'unknown error'})`)
 }
 
 const z = await loadSchema()
@@ -60,6 +76,8 @@ export const Config = z.object({
     .description('通知随横幅播放提示音：审批 Glass、提问 Ping、完成 Tink、出错 Basso。'),
   skipWhenFocused: z.boolean().default(true).volatile()
     .description('DSH 在前台时不发「完成」提醒；审批与提问不受此开关影响。'),
+  idleOnly: z.boolean().default(false).volatile()
+    .description('只在用户离开键盘时发「完成」提醒：空闲满 60 秒才提醒，替代「DSH 在前台」判断（浏览器打开 GUI 时更准确）。'),
   clickable: z.boolean().default(true).volatile()
     .description('横幅可点击：点击后把 DSH 切到前台，横幅显示为「DSH Notify」。需要一次通知授权，用「请求通知授权」按钮显式发起，通知本身永远不会弹授权框；未授权时自动走 osascript 兼容通道。'),
   scheduled: z.boolean().default(false).volatile()
@@ -72,6 +90,8 @@ export const Config = z.object({
     .description('「自检」：打开后发一条测试通知并报告通道、前台应用与兜底音源，完成后自动关闭。'),
   openSettingsNow: z.boolean().default(false).volatile()
     .description('「打开系统通知设置」：打开后跳到 macOS 通知设置面板，完成后自动关闭。'),
+  clientLocale: z.string().default('zh').volatile()
+    .description('由设置页写入的界面语言（zh / en）；Host 用它选择通知与状态文案。'),
   status: z.string().default('').volatile()
     .description('只读状态：渠道、计数与最近一次事件，由插件写回，无需编辑。'),
   details: z.string().default('').volatile()
@@ -86,6 +106,9 @@ const FINISH_QUIET_MS = 5000
 
 /** Sessions often finish together; one banner beats a burst of them. */
 const FINISH_COALESCE_MS = 4000
+
+/** Seconds of keyboard/mouse inactivity that count as "away" in idle mode. */
+const IDLE_SECONDS = 60
 
 /** One error banner per Session per window. */
 const ERROR_SESSION_QUIET_MS = 5 * 60 * 1000
@@ -119,15 +142,21 @@ const COUNTERS = {
  * @param {number} milliseconds - elapsed time.
  * @returns {string} compact duration such as `3 分 12 秒`.
  */
-function duration(milliseconds) {
+function duration(milliseconds, t) {
   const total = Math.max(0, Math.round(milliseconds / 1000))
-  if (total < 60) return `${String(total)} 秒`
+  if (total < 60) return fmt(t.durationSeconds, { value: total })
   const minutes = Math.floor(total / 60)
   const seconds = total % 60
-  if (minutes < 60) return seconds === 0 ? `${String(minutes)} 分` : `${String(minutes)} 分 ${String(seconds)} 秒`
+  if (minutes < 60) {
+    return seconds === 0
+      ? fmt(t.durationMinutes, { value: minutes })
+      : fmt(t.durationMinutesSeconds, { minutes, seconds })
+  }
   const hours = Math.floor(minutes / 60)
   const rest = minutes % 60
-  return rest === 0 ? `${String(hours)} 小时` : `${String(hours)} 小时 ${String(rest)} 分`
+  return rest === 0
+    ? fmt(t.durationHours, { value: hours })
+    : fmt(t.durationHoursMinutes, { hours, minutes: rest })
 }
 
 /**
@@ -229,11 +258,12 @@ export function apply(ctx, config) {
 
   /** Active notification sources, for the status line. */
   const channels = () => {
+    const t = text()
     const list = []
-    if (read('approvals') === true) list.push('审批')
-    if (read('questions') === true) list.push('提问')
-    if (read('finishes') === true) list.push('完成')
-    if (read('errors') === true) list.push('出错')
+    if (read('approvals') === true) list.push(t.kindApproval)
+    if (read('questions') === true) list.push(t.kindQuestion)
+    if (read('finishes') === true) list.push(t.kindFinish)
+    if (read('errors') === true) list.push(t.kindError)
     return list
   }
 
@@ -250,52 +280,85 @@ export function apply(ctx, config) {
     }
   }
 
+  /** Active UI language reported by the client half. */
+  const language = () => (read('clientLocale') === 'en' ? 'en' : 'zh')
+
+  /** Message table for the active language. */
+  const text = () => texts(language())
+
+  /** Display label for a stored event kind. */
+  const KIND_KEYS = {
+    审批: 'kindApproval',
+    提问: 'kindQuestion',
+    完成: 'kindFinish',
+    出错: 'kindError',
+    自检: 'kindSelfCheck',
+  }
+  const kindLabel = kind => text()[KIND_KEYS[kind] ?? 'kindApproval']
+
+  /** Last event sentence, translated. */
+  const lastEvent = () => state.lastLabel === ''
+    ? ''
+    : `${clock(state.lastAt)} ${kindLabel(String(state.lastKind))} ${state.lastLabel}`
+
   /** One-line status shared by the settings page and the tool. */
   const statusLine = () => {
+    const t = text()
     const total = Number(state.approvals ?? 0) + Number(state.questions ?? 0)
       + Number(state.finishes ?? 0) + Number(state.errors ?? 0)
-    if (!isSupported()) return '当前平台不是 macOS：通知渠道不可用。'
-    if (read('enabled') !== true) return `已关闭：审批、提问、完成、出错都不提醒（本次启动已记录 ${String(total)} 条）。`
+    if (!isSupported()) return t.statusUnsupported
+    if (read('enabled') !== true) return fmt(t.statusDisabled, { total })
     const active = channels()
-    if (active.length === 0) return '已开启但没有勾选任何事件来源：不会发送通知。'
-    const last = state.lastLabel === ''
-      ? '还没有触发过'
-      : `最近 ${clock(state.lastAt)} ${String(state.lastKind)} ${state.lastLabel}`
-    const click = clickReady() ? '开' : '关'
-    return `通知中：${active.join(' + ')} · 审批 ${String(state.approvals ?? 0)} · 提问 ${String(state.questions ?? 0)}`
-      + ` · 完成 ${String(state.finishes ?? 0)} · 出错 ${String(state.errors ?? 0)} · ${last} · 点击切回${click}`
+    if (active.length === 0) return t.statusNoChannels
+    const last = lastEvent() === '' ? t.statusNever : lastEvent()
+    return fmt(t.statusActive, {
+      channels: active.join(' + '),
+      approvals: Number(state.approvals ?? 0),
+      questions: Number(state.questions ?? 0),
+      finishes: Number(state.finishes ?? 0),
+      errors: Number(state.errors ?? 0),
+      last,
+      click: clickReady() ? t.clickOn : t.clickOff,
+    })
   }
 
   /** Multi-line diagnostics for the settings page. */
   const detailLine = () => {
+    const t = text()
     const parts = []
     const clickable = read('clickable') === true
     if (clickable && helperAvailable()) {
       const auth = helperAuthorization()
-      const state = auth === 'authorized' ? '已允许'
-        : auth === 'denied' ? '被拒绝（在系统设置 → 通知 → DSH Notify 里允许，或点「请求通知授权」）'
-          : auth === 'notDetermined' ? '尚未授权（点「请求通知授权」）'
-            : '未知'
-      parts.push(`渠道：优先 DSH Notify 横幅（可点击，点击把 DSH 切到前台；未授权时自动退回 osascript 兼容通道；通知授权：${state}）`)
+      const authorization = auth === 'authorized' ? t.authAllowed
+        : auth === 'denied' ? t.authDenied
+          : auth === 'notDetermined' ? t.authNotDetermined
+            : t.authUnknown
+      parts.push(fmt(t.detailHelper, { auth: authorization }))
     } else if (clickable) {
-      parts.push('渠道：点击通道不可用（缺少 helper，请重装插件或关闭「点击切回」改用兼容通道）')
+      parts.push(t.detailHelperMissing)
     } else {
-      parts.push('渠道：osascript 兼容横幅（系统里显示为「脚本编辑器」，不能点击）')
+      parts.push(t.detailOsascript)
     }
-    if (lastHelper === 'unauthorized') {
-      parts.push('最近一次：DSH Notify 还没拿到通知授权，已用兼容通道；点「请求通知授权」或在系统设置 → 通知 → DSH Notify 里允许后即可点击')
-    } else if (lastHelper === 'denied') {
-      parts.push('最近一次：DSH Notify 的通知权限被拒绝，已用兼容通道；在系统设置 → 通知 → DSH Notify 允许后自动恢复可点击')
+    if (lastHelper === 'unauthorized') parts.push(t.detailLastUnauthorized)
+    else if (lastHelper === 'denied') parts.push(t.detailLastDenied)
+    if (read('scheduled') !== true) parts.push(t.detailScheduledOff)
+    parts.push(read('sound') === true ? t.detailSoundOn : t.detailSoundOff)
+    if (lastChannel !== '') {
+      parts.push(fmt(t.detailChannelUsed, { channel: lastChannel === 'helper' ? 'DSH Notify' : 'osascript' }))
     }
-    if (read('scheduled') !== true) parts.push('定时任务产生的会话不提醒')
-    parts.push(read('sound') === true ? '提示音随横幅交给系统播放' : '不播放提示音')
-    if (lastChannel !== '') parts.push(`本次走 ${lastChannel === 'helper' ? 'DSH Notify' : 'osascript'}`)
     const app = frontmost()
-    parts.push(`前台：${app.name === '' ? (app.bundleId === '' ? '未知' : app.bundleId) : app.name}${read('skipWhenFocused') === true ? '（DSH 在前台时跳过「完成」提醒）' : ''}`)
-    if (lastBanner !== '') parts.push(`横幅：${lastBanner}`)
-    if (lastSkip !== '') parts.push(`跳过：${lastSkip}`)
-    if (lastError !== '') parts.push(`错误：${lastError}`)
-    parts.push('审批请求只在权限模式的审批为「询问」（只读 / 工作区写入）时出现，「完全访问」会直接拒绝需要审批的操作')
+    const appName = app.name === '' ? (app.bundleId === '' ? t.authUnknown : app.bundleId) : app.name
+    if (read('idleOnly') === true) {
+      parts.push(fmt(t.detailFrontmostIdle, { app: appName, idle: Math.round(idleSeconds()) }))
+    } else if (read('skipWhenFocused') === true) {
+      parts.push(fmt(t.detailFrontmostFocus, { app: appName }))
+    } else {
+      parts.push(fmt(t.detailFrontmostPlain, { app: appName }))
+    }
+    if (lastBanner !== '') parts.push(fmt(t.detailBanner, { banner: lastBanner }))
+    if (lastSkip !== '') parts.push(fmt(t.detailSkip, { skip: lastSkip }))
+    if (lastError !== '') parts.push(fmt(t.detailError, { error: lastError }))
+    parts.push(t.detailApprovalHint)
     return parts.join(' · ').slice(0, 400)
   }
 
@@ -340,7 +403,10 @@ export function apply(ctx, config) {
    * @returns {Promise<{ ok: boolean, banner: string, sound: string, error?: string }>} outcome.
    */
   const send = async (kind, message, tone, count = 1) => {
-    if (!isSupported()) return { ok: false, banner: '仅支持 macOS', sound: 'off', error: '仅支持 macOS' }
+    if (!isSupported()) {
+      const unsupported = text().statusUnsupported
+      return { ok: false, banner: unsupported, sound: 'off', error: unsupported }
+    }
     const outcome = await deliver(message, {
       sound: read('sound') === true,
       tone,
@@ -351,7 +417,9 @@ export function apply(ctx, config) {
     })
     lastChannel = outcome.channel
     lastHelper = outcome.helper ?? ''
-    lastBanner = outcome.banner === 'submitted' ? `已提交给通知中心（${clock(new Date().toISOString())}）` : outcome.banner
+    lastBanner = outcome.banner === 'submitted'
+      ? fmt(text().submittedAt, { time: clock(new Date().toISOString()) })
+      : outcome.banner
     lastError = outcome.ok ? '' : String(outcome.banner)
     trace(`notify(${kind}) banner=${outcome.banner} sound=${outcome.sound} title=${message.title}`)
     const counter = COUNTERS[kind]
@@ -398,15 +466,16 @@ export function apply(ctx, config) {
   const announceApproval = async request => {
     if (read('enabled') !== true || read('approvals') !== true) return
     if (suppressed(`approval:${String(request?.callId ?? request?.toolName ?? 'unknown')}`)) return
-    const tool = typeof request?.toolName === 'string' && request.toolName !== '' ? request.toolName : '工具调用'
+    const t = text()
+    const tool = typeof request?.toolName === 'string' && request.toolName !== '' ? request.toolName : t.genericTool
     const display = request?.displayReason
     const reason = typeof display?.zh === 'string' && display.zh !== ''
       ? display.zh
       : typeof display?.en === 'string' && display.en !== ''
         ? display.en
         : typeof request?.reason === 'string' ? request.reason : ''
-    const body = reason === '' ? `${tool} 请求你授权后才能继续` : truncate(reason)
-    await send('审批', { title: 'DSH 等你授权', subtitle: truncate(tool, 60), body }, TONES.approval)
+    const body = reason === '' ? fmt(t.notifyApprovalBody, { tool }) : truncate(reason)
+    await send('审批', { title: t.notifyApprovalTitle, subtitle: truncate(tool, 60), body }, TONES.approval)
   }
 
   /**
@@ -422,7 +491,8 @@ export function apply(ctx, config) {
     const header = typeof items[0]?.header === 'string' && items[0].header !== '' ? items[0].header : undefined
     const body = truncate(items.map(item => (typeof item?.question === 'string' ? item.question : '')).filter(Boolean).join(' / '))
     if (body === '') return
-    await send('提问', { title: 'DSH 等你回答', subtitle: header === undefined ? undefined : truncate(header, 60), body }, TONES.question)
+    const t = text()
+    await send('提问', { title: t.notifyQuestionTitle, subtitle: header === undefined ? undefined : truncate(header, 60), body }, TONES.question)
   }
 
   /**
@@ -457,27 +527,38 @@ export function apply(ctx, config) {
     const items = finishBatch
     finishBatch = []
     if (read('enabled') !== true || read('finishes') !== true) return
-    if (read('skipWhenFocused') === true && dshIsFrontmost()) {
-      lastSkip = `DSH 在前台，${clock(new Date().toISOString())} 的「完成」提醒已跳过`
+    const t = text()
+    if (read('idleOnly') === true) {
+      const idle = idleSeconds()
+      if (idle < IDLE_SECONDS) {
+        lastSkip = fmt(t.skipIdle, { idle: Math.round(idle) })
+        return
+      }
+    } else if (read('skipWhenFocused') === true && dshIsFrontmost()) {
+      lastSkip = fmt(t.skipFocused, { time: clock(new Date().toISOString()) })
       return
     }
     lastSkip = ''
     if (items.length === 1) {
       const item = items[0]
       void send('完成', {
-        title: 'DSH 回合完成',
+        title: t.notifyFinishTitle,
         subtitle: truncate(item.label, 60),
-        body: `${item.label} 已跑完，用时 ${duration(item.endedAt - item.startedAt)}。回到 DSH 查看结果。`,
+        body: fmt(t.finishBody, {
+          label: item.label,
+          duration: duration(item.endedAt - item.startedAt, t),
+        }),
       }, TONES.finish).catch(error => trace(`finish notify failed: ${error?.stack ?? String(error)}`))
       return
     }
     const labels = [...new Set(items.map(item => item.label))]
+    const separator = language() === 'en' ? ', ' : '、'
     const body = labels.length > 3
-      ? `${labels.slice(0, 3).join('、')} 等 ${labels.length} 个会话已跑完，回到 DSH 查看结果。`
-      : `${labels.join('、')} 已跑完，回到 DSH 查看结果。`
+      ? fmt(t.finishBatchBodyMore, { labels: labels.slice(0, 3).join(separator), count: items.length })
+      : fmt(t.finishBatchBody, { labels: labels.join(separator) })
     void send('完成', {
-      title: 'DSH 回合完成',
-      subtitle: `${items.length} 个会话`,
+      title: t.notifyFinishTitle,
+      subtitle: fmt(t.finishBatchSubtitle, { count: items.length }),
       body: truncate(body),
     }, TONES.finish, items.length).catch(error => trace(`finish notify failed: ${error?.stack ?? String(error)}`))
   }
@@ -503,7 +584,7 @@ export function apply(ctx, config) {
     if (read('enabled') !== true || read('finishes') !== true) return
     if (suppressed(`finish:${id}`, FINISH_QUIET_MS)) return
     if (Date.now() - (lastErrorAt.get(id) ?? 0) < 10000) {
-      lastSkip = '该会话刚出过错，10 秒内的「完成」提醒已跳过'
+      lastSkip = text().skipAfterError
       return
     }
     const label = labels.get(id) ?? id.slice(0, 12)
@@ -537,20 +618,21 @@ export function apply(ctx, config) {
     if (suppressed(`error:${id}`)) return
     const now = Date.now()
     if (now - seenAt < ERROR_SESSION_QUIET_MS) {
-      lastSkip = '该会话 5 分钟内的「出错」提醒已跳过'
+      lastSkip = text().skipSessionError
       return
     }
     const recent = errorNoticeTimes.filter(at => now - at < ERROR_GLOBAL_WINDOW_MS)
     errorNoticeTimes.length = 0
     errorNoticeTimes.push(...recent)
     if (errorNoticeTimes.length >= ERROR_GLOBAL_MAX) {
-      lastSkip = `出错提醒已达上限（10 分钟内 ${ERROR_GLOBAL_MAX} 条），本次已跳过`
+      lastSkip = fmt(text().skipErrorCap, { max: ERROR_GLOBAL_MAX })
       return
     }
     errorNoticeTimes.push(now)
     const label = labels.get(id) ?? id.slice(0, 12)
-    const text = truncate(typeof message === 'string' && message !== '' ? message : '会话出错，需要你看一下。')
-    void send('出错', { title: 'DSH 会话出错', subtitle: truncate(label, 60), body: text }, TONES.error)
+    const t = text()
+    const body = truncate(typeof message === 'string' && message !== '' ? message : t.errorFallbackBody)
+    void send('出错', { title: t.notifyErrorTitle, subtitle: truncate(label, 60), body }, TONES.error)
       .catch(error => trace(`error notify failed: ${error?.stack ?? String(error)}`))
   }
 
@@ -605,33 +687,25 @@ export function apply(ctx, config) {
     child.effect(() => child.settings.configure({ auto: false }, ctx.fiber))
   })
 
-  /** Content of the test notification, shared by the switch, the page and the tool. */
-  const TEST_MESSAGE = {
-    title: 'DSH 通知自检',
-    subtitle: '测试通知',
-    body: '看到这条横幅就说明通道可用；点一下横幅会把 DSH 切到前台。审批、提问、完成、出错都用同样的方式提醒你。',
-  }
-
   /**
    * Send the test notice and report both channels.
    * @returns {Promise<{ ok: boolean, banner: string, sound: string, message: string }>} outcome.
    */
   const runTest = async () => {
-    const outcome = await send('自检', TEST_MESSAGE, TONES.test)
-    return {
-      ...outcome,
-      message: outcome.ok
-        ? (outcome.channel === 'helper'
-          ? (outcome.confirmed === false
-            ? '测试通知已提交（DSH Notify 横幅），系统尚未确认；若没有横幅，检查 DSH Notify 的通知权限与专注模式。'
-            : '测试通知已提交（DSH Notify 横幅）。若没有横幅，检查系统设置里 DSH Notify 的通知权限与专注模式；点横幅把 DSH 切到前台。')
-          : (outcome.helper === 'unauthorized'
-            ? '测试通知走了兼容通道：DSH Notify 还没授权，点「请求通知授权」允许后会切回可点击的横幅。'
-            : outcome.helper === 'denied'
-              ? '测试通知走了兼容通道：DSH Notify 的通知权限被拒绝，在「系统通知设置」里允许后自动切回可点击的横幅。'
-              : '测试通知已提交（兼容通道：横幅显示为「脚本编辑器」，不能点击）。若没有横幅，检查系统设置里「脚本编辑器 / Script Editor」的权限与专注模式。'))
-        : `测试通知失败：${String(outcome.banner)}`,
-    }
+    const t = text()
+    const outcome = await send('自检', {
+      title: t.testTitle,
+      subtitle: t.testSubtitle,
+      body: t.testBody,
+    }, TONES.test)
+    const message = !outcome.ok
+      ? fmt(t.testFailed, { reason: String(outcome.banner) })
+      : outcome.channel === 'helper'
+        ? (outcome.confirmed === false ? t.testHelperPending : t.testHelperConfirmed)
+        : outcome.helper === 'unauthorized' ? t.testUnauthorized
+          : outcome.helper === 'denied' ? t.testDenied
+            : t.testFallback
+    return { ...outcome, message }
   }
 
   /**
@@ -639,10 +713,11 @@ export function apply(ctx, config) {
    * @returns {Promise<string>} diagnosis sentence for the status line.
    */
   const runDiagnose = async () => {
+    const t = text()
     const outcome = await runTest()
     const app = frontmost()
-    const front = app.name === '' ? (app.bundleId === '' ? '未知' : app.bundleId) : app.name
-    return `${outcome.message} 前台应用：${front}；提示音：${outcome.sound}。`
+    const front = app.name === '' ? (app.bundleId === '' ? t.authUnknown : app.bundleId) : app.name
+    return fmt(t.diagnoseLine, { message: outcome.message, front, sound: outcome.sound })
   }
 
   /**
@@ -664,21 +739,36 @@ export function apply(ctx, config) {
       }
       if (read('diagnoseNow') === true) {
         const message = await runDiagnose()
+        const t = text()
         const ok = lastError === ''
         await writeConfig({
           diagnoseNow: false,
-          status: `${statusLine()} 自检${ok ? '通过' : '失败'}。`,
-          details: `${detailLine()} · 自检：${message}`.slice(0, 400),
+          status: `${statusLine()} ${ok ? t.selfCheckPass : t.selfCheckFail}`,
+          details: `${detailLine()} · ${message}`.slice(0, 400),
         })
         return
       }
       if (read('authorizeNow') === true) {
         const started = requestAuthorization()
+        let authorization = 'unknown'
+        if (started) {
+          for (let attempt = 0; attempt < 6; attempt += 1) {
+            await new Promise(resolve => setTimeout(resolve, 800))
+            authorization = helperAuthorization()
+            if (authorization === 'authorized' || authorization === 'denied') break
+          }
+        }
+        const t = text()
+        const outcome = started === false
+          ? t.authMissingHelper
+          : authorization === 'authorized'
+            ? t.authRequestAllowed
+            : authorization === 'denied'
+              ? t.authRequestDenied
+              : t.authRequestPending
         await writeConfig({
           authorizeNow: false,
-          status: started
-            ? `${statusLine()} 已请求通知授权，请在系统弹窗里点「允许」。`
-            : `${statusLine()} 无法发起授权请求：缺少 helper，请重装插件。`,
+          status: `${statusLine()} ${outcome}`,
           details: detailLine(),
         })
         return
@@ -687,9 +777,7 @@ export function apply(ctx, config) {
         const opened = await openNotificationSettings()
         await writeConfig({
           openSettingsNow: false,
-          status: opened
-            ? `${statusLine()} 已打开系统通知设置。`
-            : `${statusLine()} 无法打开系统设置，请手动进入「系统设置 → 通知」。`,
+          status: `${statusLine()} ${opened ? text().openSettingsOk : text().openSettingsFail}`,
           details: detailLine(),
         })
         return
@@ -739,13 +827,8 @@ export function apply(ctx, config) {
   }, 80)
   ctx.effect(() => () => clearTimeout(initial))
 
-  /** Last-event sentence shared by the tool output and the settings page. */
-  const lastEvent = () => state.lastLabel === ''
-    ? ''
-    : `${clock(state.lastAt)} ${String(state.lastKind)} ${state.lastLabel}`
-
   const definition = {
-    name: 'approval_notify',
+    name: 'dsh_approval_notify',
     description:
       'Inspect, test, or diagnose the desktop notifications this profile sends while an agent waits for you. `status` reports the '
       + 'switches, the counters, and the last event; `test` sends one notification through the same channel as a real event; '
@@ -811,14 +894,28 @@ export function apply(ctx, config) {
         additionalProperties: false,
       },
       render(_args, value) {
+        const t = text()
+        const onOff = candidate => (candidate ? t.on : t.off)
         const lines = [
-          value.supported ? value.channel : '当前平台不是 macOS，通知渠道不可用。',
-          `审批 ${value.approvalsSeen} · 提问 ${value.questionsSeen} · 完成 ${value.finishesSeen} · 出错 ${value.errorsSeen}`
-            + ` · 最近 ${value.lastEvent === '' ? '还没有触发过' : value.lastEvent}`,
-          `开关：总开关${value.enabled ? '开' : '关'} · 审批${value.approvals ? '开' : '关'} · 提问${value.questions ? '开' : '关'}`
-            + ` · 完成${value.finishes ? '开' : '关'} · 出错${value.errors ? '开' : '关'} · 提示音${value.sound ? '开' : '关'}`
-            + ` · 点击切回${value.clickable ? '开' : '关'} · 定时任务${value.scheduled ? '提醒' : '不提醒'}`,
-          `前台：${value.frontmost}`,
+          value.supported ? value.channel : t.toolUnsupported,
+          fmt(t.toolCounters, {
+            approvals: value.approvalsSeen,
+            questions: value.questionsSeen,
+            finishes: value.finishesSeen,
+            errors: value.errorsSeen,
+            last: value.lastEvent === '' ? t.statusNever : value.lastEvent,
+          }),
+          fmt(t.toolSwitches, {
+            enabled: onOff(value.enabled),
+            approvals: onOff(value.approvals),
+            questions: onOff(value.questions),
+            finishes: onOff(value.finishes),
+            errors: onOff(value.errors),
+            sound: onOff(value.sound),
+            clickable: onOff(value.clickable),
+            scheduled: value.scheduled ? t.scheduledOn : t.scheduledOff,
+          }),
+          fmt(t.toolFrontmost, { app: value.frontmost }),
         ]
         if (value.message !== '') lines.push(value.message)
         return [{ type: 'text', text: lines.join('\n') }]
@@ -853,14 +950,30 @@ export function apply(ctx, config) {
         finishesSeen: Number(state.finishes ?? 0),
         errorsSeen: Number(state.errors ?? 0),
         lastEvent: lastEvent(),
-        channel: clickReady()
-          ? `DSH Notify 横幅（点击切回 DSH）${read('sound') === true ? ' + 系统提示音' : ''}`
-          : `osascript display notification（不可点击）${read('sound') === true ? ' + 系统提示音' : ''}`,
+        channel: fmt(clickReady() ? text().toolChannelHelper : text().toolChannelOsascript, {
+          sound: read('sound') === true ? text().toneSuffix : '',
+        }),
         frontmost: frontmost().name === '' ? frontmost().bundleId : frontmost().name,
         message,
       }
     },
   }
 
-  ctx.effect(() => ctx.tools.register(definition))
+  // A distinct name keeps this plugin from colliding with other approval tools;
+  // the old name stays registered so existing prompts keep working.
+  const alias = {
+    ...definition,
+    name: 'approval_notify',
+    description: 'Deprecated alias of `dsh_approval_notify`; use that name. '
+      + definition.description,
+  }
+
+  ctx.effect(() => {
+    const disposeDefinition = ctx.tools.register(definition)
+    const disposeAlias = ctx.tools.register(alias)
+    return () => {
+      disposeAlias()
+      disposeDefinition()
+    }
+  })
 }

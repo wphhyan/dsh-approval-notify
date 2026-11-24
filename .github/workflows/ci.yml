@@ -32,6 +32,7 @@ jobs:
             'lib/notify.js',
             'lib/state.js',
             'lib/system.js',
+            'lib/messages.js',
             'cordis.patch.yml',
             'icon.svg',
             'locale/zh.json',

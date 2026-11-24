@@ -1,6 +1,6 @@
 {
   "name": "dsh-approval-notify",
-  "version": "1.4.5",
+  "version": "1.5.0",
   "description": "macOS Notification Center alerts for the four moments a DSH agent waits on you — tool approval, ask_user_question, a finished turn, and a session error — with clickable banners that bring DSH back to the front.",
   "type": "module",
   "license": "MIT",

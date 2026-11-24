@@ -119,6 +119,16 @@ int main(int argc, const char *argv[]) {
       else if ([args[i] isEqualToString:@"--activate-now"]) activateNow = @"1";
     }
 
+    // An explicit action keeps the banner useful even for a click that lands on
+    // the action button rather than the banner body.
+    UNNotificationAction *openAction =
+        [UNNotificationAction actionWithIdentifier:@"OPEN" title:@"Open DSH" options:0];
+    UNNotificationCategory *category =
+        [UNNotificationCategory categoryWithIdentifier:@"DSH_OPEN"
+                                              actions:@[ openAction ]
+                                    intentIdentifiers:@[]
+                                              options:UNNotificationCategoryOptionNone];
+
     [NSApplication sharedApplication];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
 
@@ -129,6 +139,7 @@ int main(int argc, const char *argv[]) {
 
     UNUserNotificationCenter *center = [UNUserNotificationCenter currentNotificationCenter];
     center.delegate = delegate;
+    [center setNotificationCategories:[NSSet setWithObject:category]];
 
     if ([args containsObject:@"--status"]) {
       __block NSInteger status = -1;
@@ -170,12 +181,23 @@ int main(int argc, const char *argv[]) {
       return 0;
     }
 
+    // The web GUI URL carries the session token. The plugin passes it through the
+    // environment so the credential never appears in this process's arguments.
+    if ([url length] == 0) {
+      const char *fromEnvironment = getenv("DSH_NOTIFY_URL");
+      if (fromEnvironment != NULL && fromEnvironment[0] != '\0') {
+        url = [NSString stringWithUTF8String:fromEnvironment];
+        delegate.url = url;
+      }
+    }
+
     NSString *notifyId = [identifier length] > 0 ? identifier : [[NSUUID UUID] UUIDString];
     void (^post)(void) = ^{
       UNMutableNotificationContent *content = [[UNMutableNotificationContent alloc] init];
       content.title = title ?: @"";
       if ([subtitle length] > 0) content.subtitle = subtitle;
       content.body = body ?: @"";
+      content.categoryIdentifier = @"DSH_OPEN";
       if ([sound length] > 0) content.sound = [UNNotificationSound soundNamed:sound];
       UNNotificationRequest *request = [UNNotificationRequest requestWithIdentifier:notifyId
                                                                            content:content

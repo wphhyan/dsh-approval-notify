@@ -20,6 +20,7 @@ test('ships every runtime file the manifest references', () => {
     'lib/notify.js',
     'lib/state.js',
     'lib/system.js',
+    'lib/messages.js',
     'helper/dsh-notify.m',
     'locale/zh.json',
     'locale/en.json',
