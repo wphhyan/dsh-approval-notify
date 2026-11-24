@@ -12,7 +12,8 @@
 //   dsh-notify --status                       # print authorization, then exit
 //   dsh-notify --request                      # ask once, print granted/denied
 //   dsh-notify --title T [--subtitle S] [--body B] [--sound Glass]
-//              [--activate com.deepseek.dsh] [--url https://...]
+//              [--activate com.deepseek.dsh] [--focus-url dsh://open]
+//              [--url https://...]
 //              [--identifier key] [--timeout 120]
 //   dsh-notify --activate-now --activate com.deepseek.dsh [--url ...]
 //
@@ -28,6 +29,7 @@ static NSString *const kDefaultBundleId = @"com.deepseek.dsh";
 
 @interface DSHNotifyDelegate : NSObject <UNUserNotificationCenterDelegate>
 @property (nonatomic, copy) NSString *bundleId;
+@property (nonatomic, copy) NSString *focusUrl;
 @property (nonatomic, copy) NSString *url;
 - (void)activateTarget;
 @end
@@ -41,6 +43,12 @@ static NSString *const kDefaultBundleId = @"com.deepseek.dsh";
     for (NSRunningApplication *app in apps) {
       if ([app activateWithOptions:NSApplicationActivateIgnoringOtherApps]) return;
     }
+  }
+  // The desktop app's own URL handler restores, focuses and (if needed) launches
+  // the window, which is more reliable than activating a bundle that is not running.
+  if ([self.focusUrl length] > 0) {
+    NSURL *focus = [NSURL URLWithString:self.focusUrl];
+    if (focus != nil && [[NSWorkspace sharedWorkspace] openURL:focus]) return;
   }
   if ([self.url length] > 0) {
     NSURL *target = [NSURL URLWithString:self.url];
@@ -91,6 +99,7 @@ int main(int argc, const char *argv[]) {
     NSString *body = nil;
     NSString *sound = nil;
     NSString *bundleId = nil;
+    NSString *focusUrl = nil;
     NSString *url = nil;
     NSString *identifier = nil;
     NSString *activateNow = nil;
@@ -103,6 +112,7 @@ int main(int argc, const char *argv[]) {
       else if ((value = valueAfter(args, &i, @"--body")) != nil) body = value;
       else if ((value = valueAfter(args, &i, @"--sound")) != nil) sound = value;
       else if ((value = valueAfter(args, &i, @"--activate")) != nil) bundleId = value;
+      else if ((value = valueAfter(args, &i, @"--focus-url")) != nil) focusUrl = value;
       else if ((value = valueAfter(args, &i, @"--url")) != nil) url = value;
       else if ((value = valueAfter(args, &i, @"--identifier")) != nil) identifier = value;
       else if ((value = valueAfter(args, &i, @"--timeout")) != nil) timeout = [value doubleValue];
@@ -114,6 +124,7 @@ int main(int argc, const char *argv[]) {
 
     DSHNotifyDelegate *delegate = [[DSHNotifyDelegate alloc] init];
     delegate.bundleId = bundleId;
+    delegate.focusUrl = focusUrl;
     delegate.url = url;
 
     UNUserNotificationCenter *center = [UNUserNotificationCenter currentNotificationCenter];
@@ -147,12 +158,14 @@ int main(int argc, const char *argv[]) {
     // with no arguments at all. Treat that as "the user wants DSH back".
     if (argc == 1) {
       delegate.bundleId = bundleId ?: kDefaultBundleId;
+      delegate.focusUrl = @"dsh://open";
       [delegate activateTarget];
       return 0;
     }
 
     if (activateNow != nil) {
       delegate.bundleId = bundleId ?: kDefaultBundleId;
+      delegate.focusUrl = focusUrl ?: @"dsh://open";
       [delegate activateTarget];
       return 0;
     }

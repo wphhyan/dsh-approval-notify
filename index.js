@@ -84,6 +84,9 @@ const DEDUPE_MS = 3000
 /** A Session that flaps running→idle→running keeps one finish reminder per interval. */
 const FINISH_QUIET_MS = 5000
 
+/** Sessions often finish together; one banner beats a burst of them. */
+const FINISH_COALESCE_MS = 4000
+
 /** One error banner per Session per window. */
 const ERROR_SESSION_QUIET_MS = 5 * 60 * 1000
 
@@ -164,6 +167,9 @@ export function apply(ctx, config) {
   let busy = false
   let pendingRefresh = ''
   let lastPublishAt = 0
+  /** @type {{ id: string, label: string, startedAt: number, endedAt: number }[]} */
+  let finishBatch = []
+  let finishTimer
   let timer
 
   /** @param {string} field @returns {unknown} live value of an ordinary or volatile field. */
@@ -333,13 +339,14 @@ export function apply(ctx, config) {
    * @param {string} [tone] - alert tone name.
    * @returns {Promise<{ ok: boolean, banner: string, sound: string, error?: string }>} outcome.
    */
-  const send = async (kind, message, tone) => {
+  const send = async (kind, message, tone, count = 1) => {
     if (!isSupported()) return { ok: false, banner: '仅支持 macOS', sound: 'off', error: '仅支持 macOS' }
     const outcome = await deliver(message, {
       sound: read('sound') === true,
       tone,
       click: read('clickable') === true,
       bundleId: DSH_BUNDLE_ID,
+      focusUrl: 'dsh://open',
       url: guiUrl(),
     })
     lastChannel = outcome.channel
@@ -357,7 +364,7 @@ export function apply(ctx, config) {
         lastAt: new Date().toISOString(),
         lastLabel: message.subtitle ?? truncate(message.body, 24),
         lastBanner,
-        [counter]: Number(state[counter] ?? 0) + 1,
+        [counter]: Number(state[counter] ?? 0) + count,
       })
       void publish().catch(error => trace(`publish after notify failed: ${error?.stack ?? String(error)}`))
     }
@@ -438,6 +445,44 @@ export function apply(ctx, config) {
   }
 
   /**
+   * Send the queued finish reminders as one banner.
+   *
+   * A batch is flushed after a short window so several Sessions that finish at
+   * the same time produce one notification instead of a burst. Focus is checked
+   * at flush time, not at arrival time.
+   * @returns {void}
+   */
+  const flushFinishes = () => {
+    if (finishBatch.length === 0) return
+    const items = finishBatch
+    finishBatch = []
+    if (read('enabled') !== true || read('finishes') !== true) return
+    if (read('skipWhenFocused') === true && dshIsFrontmost()) {
+      lastSkip = `DSH 在前台，${clock(new Date().toISOString())} 的「完成」提醒已跳过`
+      return
+    }
+    lastSkip = ''
+    if (items.length === 1) {
+      const item = items[0]
+      void send('完成', {
+        title: 'DSH 回合完成',
+        subtitle: truncate(item.label, 60),
+        body: `${item.label} 已跑完，用时 ${duration(item.endedAt - item.startedAt)}。回到 DSH 查看结果。`,
+      }, TONES.finish).catch(error => trace(`finish notify failed: ${error?.stack ?? String(error)}`))
+      return
+    }
+    const labels = [...new Set(items.map(item => item.label))]
+    const body = labels.length > 3
+      ? `${labels.slice(0, 3).join('、')} 等 ${labels.length} 个会话已跑完，回到 DSH 查看结果。`
+      : `${labels.join('、')} 已跑完，回到 DSH 查看结果。`
+    void send('完成', {
+      title: 'DSH 回合完成',
+      subtitle: `${items.length} 个会话`,
+      body: truncate(body),
+    }, TONES.finish, items.length).catch(error => trace(`finish notify failed: ${error?.stack ?? String(error)}`))
+  }
+
+  /**
    * Announce that a Session stopped working and now waits for the user.
    * @param {string} sessionId - Session id.
    * @param {boolean} running - new running state.
@@ -461,17 +506,18 @@ export function apply(ctx, config) {
       lastSkip = '该会话刚出过错，10 秒内的「完成」提醒已跳过'
       return
     }
-    if (read('skipWhenFocused') === true && dshIsFrontmost()) {
-      lastSkip = `DSH 在前台，${clock(new Date().toISOString())} 的「完成」提醒已跳过`
+    const label = labels.get(id) ?? id.slice(0, 12)
+    finishBatch.push({ id, label, startedAt: started, endedAt: Date.now() })
+    if (finishBatch.length > 20) {
+      flushFinishes()
       return
     }
-    lastSkip = ''
-    const label = labels.get(id) ?? id.slice(0, 12)
-    void send('完成', {
-      title: 'DSH 回合完成',
-      subtitle: truncate(label, 60),
-      body: `${label} 已跑完，用时 ${duration(Date.now() - started)}。回到 DSH 查看结果。`,
-    }, TONES.finish).catch(error => trace(`finish notify failed: ${error?.stack ?? String(error)}`))
+    if (finishTimer === undefined) {
+      finishTimer = setTimeout(() => {
+        finishTimer = undefined
+        flushFinishes()
+      }, FINISH_COALESCE_MS)
+    }
   }
 
   /**
@@ -672,6 +718,8 @@ export function apply(ctx, config) {
   ctx.effect(() => () => {
     if (timer !== undefined) clearTimeout(timer)
     timer = undefined
+    if (finishTimer !== undefined) clearTimeout(finishTimer)
+    finishTimer = undefined
   })
 
   ctx.on('loader/volatile-update', () => schedule('switch'))
