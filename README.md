@@ -1,6 +1,12 @@
 # dsh-approval-notify
 
-一个 DeepSeek Harness（DSH）插件：Agent 停下来等你时，弹一条 macOS 通知中心横幅。中文 | [English](README.en.md)
+**简体中文** | [English](README.en.md)
+
+Agent 停下来等你时，弹一条 macOS 通知中心横幅：工具审批、ask_user_question 提问、会话跑完一轮、会话出错，四个时刻各一个开关；横幅可点击，点一下把 DSH 切到前台。
+
+![platform](https://img.shields.io/badge/platform-macOS-000000)
+![DSH](https://img.shields.io/badge/DSH-%E2%89%A50.2.2--rc.5-4B6BFB)
+![license](https://img.shields.io/badge/license-MIT-green)
 
 | 时刻 | 事件源 | 默认 |
 | --- | --- | --- |

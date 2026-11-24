@@ -1,6 +1,12 @@
 # dsh-approval-notify
 
-A DeepSeek Harness (DSH) plugin that raises a macOS Notification Center banner at the four moments an agent stops and waits for you. [中文](README.md) | English
+[简体中文](README.md) | **English**
+
+Raises a macOS Notification Center banner at the four moments an agent stops and waits for you: a tool approval, an ask_user_question prompt, a finished turn, and a session error — one switch each, and clicking the banner brings DSH back to the front.
+
+![platform](https://img.shields.io/badge/platform-macOS-000000)
+![DSH](https://img.shields.io/badge/DSH-%E2%89%A50.2.2--rc.5-4B6BFB)
+![license](https://img.shields.io/badge/license-MIT-green)
 
 | Event | Source | Default |
 | --- | --- | --- |
