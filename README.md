@@ -31,10 +31,10 @@ dsh plugin --profile <profile> add github:wphhyan/dsh-approval-notify
 
 ## 它会做什么
 
-- **横幅可点击**：插件自带一个 60 KB 的 `DSH Notify` 小应用（源码在 `helper/`，构建脚本可复现），从它自己的身份发送横幅；点一下横幅就把 DSH 切到前台，只有 `dsh web` 在跑时则打开页面。首次使用会请求一次通知权限。
+- **横幅可点击**：插件自带一个约 600 KB 的 `DSH Notify` 小应用（源码在 `helper/`，构建脚本可复现），从它自己的身份发送横幅；点一下横幅就把 DSH 切到前台，只有 `dsh web` 在跑时则打开页面。授权只在设置页点「请求通知授权」时请求一次。
 - **提示音跟着横幅走**：`display notification … sound name` / `--sound` 把横幅和声音一起交给系统，提示音不会被插件侧的超时掐断，专注模式与静音照常生效。审批 Glass、提问 Ping、完成 Tink、出错 Basso。
 - **该安静时安静**：DSH 在前台时跳过「完成」提醒；同一会话 5 秒内只有一条完成提醒；「出错」5 分钟最多一条，每分钟都失败的定时任务刷不爆通知中心；同一 `callId` 3 秒内只提醒一次。
-- **设置页**在 **设置 → 插件 → 审批提醒**：八个开关（总开关、审批、提问、完成、出错、提示音、前台跳过、点击切回）、四类计数、最近一次事件，以及四个按钮——**发送测试通知**、**自检**、**打开系统通知设置**、**刷新**。
+- **设置页**在 **设置 → 插件 → 审批提醒**：九个开关（总开关、审批、提问、完成、出错、提示音、前台跳过、点击切回、定时任务也提醒）、四类计数、最近一次事件，以及五个按钮——**请求通知授权**、**发送测试通知**、**自检**、**打开系统通知设置**、**刷新**。
 - **给 Agent 的工具**：`approval_notify`，支持 `status`、`test`、`diagnose`。
 
 ## 送达与限制
@@ -58,7 +58,7 @@ dsh plugin --profile <profile> add github:wphhyan/dsh-approval-notify
 ## 实现
 
 - `lib/notify.js` —— 优先启动 `helper/DSHNotify.app`（可点击、能处理点击切回），失败或关闭时退回 AppleScript + `osascript`，脚本被拒时用 `afplay` 兜底。
-- `helper/dsh-notify.m` —— 60 行 Objective-C：投递 `NSUserNotification`、保持 run loop 等待点击、点击后激活 `com.deepseek.dsh` 或打开 Web GUI；`helper/build.sh` 用 clang 编译 universal（arm64 + x86_64）并 ad-hoc 签名。
+- `helper/dsh-notify.m` —— 约 200 行 Objective-C：用 `UNUserNotificationCenter` 投递、保持 run loop 等待点击、点击后激活 `com.deepseek.dsh` 或打开 Web GUI；`helper/build.sh` 用 clang 编译 universal（arm64 + x86_64）并 ad-hoc 签名。
 - `lib/system.js` —— 用 `lsappinfo` 判断前台应用（1 秒缓存）、打开系统通知面板。
 - `lib/state.js` —— `plugin-data` 下的原子计数与最近事件，兼容旧版状态文档。
 - `client.js` —— 设置页，通过 `ctx.remote.settings` 读写本插件的设置命名空间。

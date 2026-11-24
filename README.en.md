@@ -31,10 +31,10 @@ The market install is the same package: **Plugins → Discover**, search for `ds
 
 ## What you get
 
-- **Clickable banners.** A 60 KB `DSH Notify` helper app ships with the plugin (source in `helper/`, reproducible build script) and posts the banner from its own identity: clicking it activates the DSH desktop app, or opens the page when only `dsh web` runs. macOS asks for the notification permission once, on first delivery.
+- **Clickable banners.** A ~600 KB `DSH Notify` helper app ships with the plugin (source in `helper/`, reproducible build script) and posts the banner from its own identity: clicking it activates the DSH desktop app, or opens the page when only `dsh web` runs. The notification permission is requested only by the settings page's request button.
 - **Banner with the tone attached.** `display notification … sound name` / `--sound` hands both to the system, so the tone is never truncated by a plugin-side timeout and Focus/mute rules apply exactly as they do for any other app: approval Glass, question Ping, finish Tink, error Basso.
 - **Quiet when it should be.** The finish reminder is skipped while DSH is frontmost; one finish reminder per session per 5 s; error reminders are limited to one per 5 minutes, so an automation that fails every minute cannot fill the notification center; the same `callId` is announced once per 3 s.
-- **Settings page** under **Settings → Plugins → 审批提醒**: eight switches (master, approval, question, finish, error, sound, skip-while-focused, clickable), four counters, the last event, and four buttons — **Send test notification**, **Self-check**, **Open system notification settings**, **Refresh**.
+- **Settings page** under **Settings → Plugins → 审批提醒**: nine switches (master, approval, question, finish, error, sound, skip-while-focused, clickable, also notify scheduled runs), four counters, the last event, and five buttons — **Request notification permission**, **Send test notification**, **Self-check**, **Open system notification settings**, **Refresh**.
 - **A tool for your agent**: `approval_notify` with `status`, `test`, and `diagnose`.
 
 ## Delivery and limitations
@@ -57,7 +57,7 @@ The market install is the same package: **Plugins → Discover**, search for `ds
 ## Implementation
 
 - `lib/notify.js` — starts `helper/DSHNotify.app` first (clickable, handles the click), falls back to AppleScript + `osascript`, and to `afplay` when the scripted request is rejected.
-- `helper/dsh-notify.m` — 60 lines of Objective-C: deliver an `NSUserNotification`, keep a run loop alive for the click, then activate `com.deepseek.dsh` or open the web GUI URL; `helper/build.sh` compiles universal (arm64 + x86_64) and ad-hoc signs it.
+- `helper/dsh-notify.m` — about 200 lines of Objective-C: deliver through `UNUserNotificationCenter`, keep a run loop alive for the click, then activate `com.deepseek.dsh` or open the web GUI URL; `helper/build.sh` compiles universal (arm64 + x86_64) and ad-hoc signs it.
 - `lib/system.js` — frontmost app through `lsappinfo` (1 s cache), opening the notification settings pane.
 - `lib/state.js` — atomic counters and last event under `plugin-data`, tolerating an older state document.
 - `client.js` — the settings page, reading and writing this plugin's settings namespace through `ctx.remote.settings`.

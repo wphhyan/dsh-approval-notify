@@ -16,7 +16,7 @@
 
 import path from 'node:path'
 import { createRequire } from 'node:module'
-import { TONES, deliver, helperAvailable, isSupported, requestAuthorization, truncate } from './lib/notify.js'
+import { TONES, deliver, helperAuthorization, helperAvailable, isSupported, requestAuthorization, truncate } from './lib/notify.js'
 import { readState, trace, writeState } from './lib/state.js'
 import { DSH_BUNDLE_ID, dshIsFrontmost, frontmost, openNotificationSettings } from './lib/system.js'
 
@@ -146,6 +146,8 @@ export function apply(ctx, config) {
   const labels = new Map()
   /** @type {Map<string, number>} Session id → when it started running. */
   const runningSince = new Map()
+  /** @type {Map<string, number>} Session id → when its last error was seen. */
+  const lastErrorAt = new Map()
   /** Last error banner, so a failing automation cannot spam the notification center. */
   let lastErrorNoticeAt = 0
   /** Counters are read from disk once per activation and kept in memory. */
@@ -225,7 +227,16 @@ export function apply(ctx, config) {
 
   /** Whether the clickable helper can actually deliver right now. */
   const clickReady = () => read('clickable') === true && helperAvailable()
-    && lastHelper !== 'unauthorized' && lastHelper !== 'denied'
+    && helperAuthorization() === 'authorized'
+
+  /** Keep a per-session map bounded on long uptimes. */
+  const cap = map => {
+    while (map.size > 400) {
+      const oldest = map.keys().next().value
+      if (oldest === undefined) break
+      map.delete(oldest)
+    }
+  }
 
   /** One-line status shared by the settings page and the tool. */
   const statusLine = () => {
@@ -248,7 +259,12 @@ export function apply(ctx, config) {
     const parts = []
     const clickable = read('clickable') === true
     if (clickable && helperAvailable()) {
-      parts.push('渠道：优先 DSH Notify 横幅（可点击，点击把 DSH 切到前台；首次会请求一次通知授权，被拒绝时自动退回 osascript 兼容通道）')
+      const auth = helperAuthorization()
+      const state = auth === 'authorized' ? '已允许'
+        : auth === 'denied' ? '被拒绝（在系统设置 → 通知 → DSH Notify 里允许，或点「请求通知授权」）'
+          : auth === 'notDetermined' ? '尚未授权（点「请求通知授权」）'
+            : '未知'
+      parts.push(`渠道：优先 DSH Notify 横幅（可点击，点击把 DSH 切到前台；未授权时自动退回 osascript 兼容通道；通知授权：${state}）`)
     } else if (clickable) {
       parts.push('渠道：点击通道不可用（缺少 helper，请重装插件或关闭「点击切回」改用兼容通道）')
     } else {
@@ -278,8 +294,9 @@ export function apply(ctx, config) {
    */
   const publish = async message => {
     const status = `${statusLine()}${message === undefined || message === '' ? '' : ` ${message}`}`
-    if (read('status') === status && read('details') === detailLine()) return
-    await writeConfig({ status, details: detailLine() })
+    const details = detailLine()
+    if (read('status') === status && read('details') === details) return
+    await writeConfig({ status, details })
   }
 
   /**
@@ -330,8 +347,8 @@ export function apply(ctx, config) {
       })
     }
     return outcome.ok
-      ? { ok: true, banner: outcome.banner, sound: outcome.sound }
-      : { ok: false, banner: outcome.banner, sound: outcome.sound, error: lastError }
+      ? { ok: true, banner: outcome.banner, sound: outcome.sound, channel: outcome.channel, helper: outcome.helper }
+      : { ok: false, banner: outcome.banner, sound: outcome.sound, channel: outcome.channel, helper: outcome.helper, error: lastError }
   }
 
   /**
@@ -402,6 +419,7 @@ export function apply(ctx, config) {
       ? path.basename(summary.cwd)
       : ''
     labels.set(id, directory === '' ? id.slice(0, 12) : directory)
+    cap(labels)
   }
 
   /**
@@ -416,6 +434,7 @@ export function apply(ctx, config) {
     if (isScheduledRun(id) && read('scheduled') !== true) return
     if (running === true) {
       runningSince.set(id, Date.now())
+      cap(runningSince)
       return
     }
     const started = runningSince.get(id)
@@ -423,6 +442,10 @@ export function apply(ctx, config) {
     if (started === undefined) return
     if (read('enabled') !== true || read('finishes') !== true) return
     if (suppressed(`finish:${id}`, FINISH_QUIET_MS)) return
+    if (Date.now() - (lastErrorAt.get(id) ?? 0) < 10000) {
+      lastSkip = '该会话刚出过错，10 秒内的「完成」提醒已跳过'
+      return
+    }
     if (read('skipWhenFocused') === true && dshIsFrontmost()) {
       lastSkip = `DSH 在前台，${clock(new Date().toISOString())} 的「完成」提醒已跳过`
       return
@@ -447,6 +470,8 @@ export function apply(ctx, config) {
     const id = String(sessionId ?? '')
     if (id === '') return
     if (isScheduledRun(id) && read('scheduled') !== true) return
+    lastErrorAt.set(id, Date.now())
+    cap(lastErrorAt)
     if (suppressed(`error:${id}`)) return
     const now = Date.now()
     if (now - lastErrorNoticeAt < ERROR_QUIET_MS) {
@@ -463,15 +488,15 @@ export function apply(ctx, config) {
   /**
    * A waterfall listener must always delegate: returning nothing would resolve
    * the pending decision to `unavailable` and fail the tool call closed.
+   *
+   * The announcement runs beside the decision, not before it: delivery spawns a
+   * process (and may fall back to a scripted notification), so awaiting it would
+   * delay the approval/question UI the human is waiting for.
    * @param {(request: object) => Promise<void>} announce - announcement.
    * @returns {(request: object, next: () => Promise<unknown>) => Promise<unknown>} listener.
    */
-  const waterfall = announce => async (request, next) => {
-    try {
-      await announce(request)
-    } catch (error) {
-      trace(`announce failed: ${error?.stack ?? String(error)}`)
-    }
+  const waterfall = announce => (request, next) => {
+    void announce(request).catch(error => trace(`announce failed: ${error?.stack ?? String(error)}`))
     return next()
   }
 
@@ -489,6 +514,13 @@ export function apply(ctx, config) {
   ctx.effect(() => ctx.on('api-session/added', emit(rememberSession)))
   ctx.effect(() => ctx.on('api-session/status', emit(onSessionStatus)))
   ctx.effect(() => ctx.on('api-session/error', emit(onSessionError)))
+  ctx.effect(() => ctx.on('api-session/removed', emit(sessionId => {
+    const id = String(sessionId ?? '')
+    if (id === '') return
+    labels.delete(id)
+    runningSince.delete(id)
+    lastErrorAt.delete(id)
+  })))
 
   try {
     for (const agent of ctx.get('agents')?.list?.() ?? []) {
@@ -521,10 +553,12 @@ export function apply(ctx, config) {
       ...outcome,
       message: outcome.ok
         ? (outcome.channel === 'helper'
-          ? '测试通知已提交。首次会弹出「DSH Notify 想发送通知」的授权，允许后横幅可点击；点横幅把 DSH 切到前台。若没有横幅，检查系统设置里 DSH Notify 的通知权限与专注模式。'
-          : (outcome.helper === 'denied'
-            ? '测试通知走了兼容通道：「DSH Notify」的通知权限被拒绝。打开「系统通知设置」允许它，之后会自动切回可点击的横幅。'
-            : '测试通知已提交（兼容通道：横幅显示为「脚本编辑器」，不能点击）。若没有横幅，检查系统设置里「脚本编辑器 / Script Editor」的权限与专注模式。'))
+          ? '测试通知已提交（DSH Notify 横幅）。若没有横幅，检查系统设置里 DSH Notify 的通知权限与专注模式；点横幅把 DSH 切到前台。'
+          : (outcome.helper === 'unauthorized'
+            ? '测试通知走了兼容通道：DSH Notify 还没授权，点「请求通知授权」允许后会切回可点击的横幅。'
+            : outcome.helper === 'denied'
+              ? '测试通知走了兼容通道：DSH Notify 的通知权限被拒绝，在「系统通知设置」里允许后自动切回可点击的横幅。'
+              : '测试通知已提交（兼容通道：横幅显示为「脚本编辑器」，不能点击）。若没有横幅，检查系统设置里「脚本编辑器 / Script Editor」的权限与专注模式。'))
         : `测试通知失败：${String(outcome.banner)}`,
     }
   }
@@ -608,7 +642,16 @@ export function apply(ctx, config) {
   })
 
   ctx.on('loader/volatile-update', () => schedule('switch'))
-  ctx.on('settings/document-updated', () => schedule('settings'))
+  ctx.on('settings/document-updated', ns => {
+    if (typeof ns === 'string' && ns !== 'approval-notify') return
+    schedule('settings')
+  })
+  // A status write can lose the profile lock to an install; the entry settles
+  // after pnpm releases it, and a fresh pass then publishes the real status.
+  ctx.effect(() => ctx.on('plugin-manager/operation', operation => {
+    if (operation?.phase !== 'settled') return
+    schedule('plugin-manager')
+  }))
 
   const initial = setTimeout(() => {
     void refresh('activate')
