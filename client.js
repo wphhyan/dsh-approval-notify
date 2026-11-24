@@ -114,6 +114,11 @@ window.__ModuleLoader__.load({
         name: 'DSH 在前台时不发完成提醒',
         hint: '你正看着 DSH 时，「完成」提醒会被跳过；审批与提问不受影响。',
       },
+      {
+        key: 'clickable',
+        name: '点击横幅切回 DSH',
+        hint: '横幅由自带的 DSH Notify 小应用发送，点击即把 DSH 切到前台；首次会请求一次通知权限，被拒绝时自动退回兼容通道。关掉后同样走 osascript 兼容通道：无需授权，但横幅显示为「脚本编辑器」且不能点击。',
+      },
     ]
 
     /**
@@ -255,8 +260,9 @@ window.__ModuleLoader__.load({
           }, '刷新'),
         ),
         h('div', { style: styles.hint },
-          '横幅由系统代发，在通知中心里显示为「脚本编辑器 / Script Editor」；'
-          + '收不到时先看系统设置 → 通知里它是否被静音，再看是否开着专注模式。'),
+          '点击切回开启时，横幅在系统里显示为「DSH Notify」，第一次会请求通知授权；'
+          + '关闭时显示为「脚本编辑器 / Script Editor」，不能点击。'
+          + '收不到时先看系统设置 → 通知里对应的应用是否被静音，再看是否开着专注模式。'),
         enabled ? null : h('div', { style: styles.hint }, '总开关关着：下面的事件开关保存了也不会发通知。'),
         error === null ? null : h('div', { style: styles.error }, error),
         view === null ? null : h('details', {},

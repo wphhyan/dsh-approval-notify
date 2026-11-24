@@ -16,9 +16,9 @@
 
 import path from 'node:path'
 import { createRequire } from 'node:module'
-import { TONES, deliver, isSupported, truncate } from './lib/notify.js'
+import { TONES, deliver, helperAvailable, isSupported, truncate } from './lib/notify.js'
 import { readState, trace, writeState } from './lib/state.js'
-import { dshIsFrontmost, frontmost, openNotificationSettings } from './lib/system.js'
+import { DSH_BUNDLE_ID, dshIsFrontmost, frontmost, openNotificationSettings } from './lib/system.js'
 
 export const name = 'approval-notify'
 
@@ -60,6 +60,8 @@ export const Config = z.object({
     .description('通知随横幅播放提示音：审批 Glass、提问 Ping、完成 Tink、出错 Basso。'),
   skipWhenFocused: z.boolean().default(true).volatile()
     .description('DSH 在前台时不发「完成」提醒；审批与提问不受此开关影响。'),
+  clickable: z.boolean().default(true).volatile()
+    .description('横幅可点击：点击后把 DSH 切到前台，横幅显示为「DSH Notify」，首次会请求一次通知权限。关闭后走 osascript 兼容通道：无需授权，但显示为「脚本编辑器」且不能点击。'),
   testNow: z.boolean().default(false).volatile()
     .description('「发送测试通知」：打开后立即发一条测试通知，完成或失败后自动关闭。'),
   diagnoseNow: z.boolean().default(false).volatile()
@@ -135,6 +137,8 @@ export function apply(ctx, config) {
   let lastBanner = ''
   let lastError = ''
   let lastSkip = ''
+  let lastChannel = ''
+  let lastHelper = ''
   let busy = false
   let timer
 
@@ -203,6 +207,9 @@ export function apply(ctx, config) {
     return list
   }
 
+  /** Whether the clickable helper can actually deliver right now. */
+  const clickReady = () => read('clickable') === true && helperAvailable()
+
   /** One-line status shared by the settings page and the tool. */
   const statusLine = () => {
     const total = Number(state.approvals ?? 0) + Number(state.questions ?? 0)
@@ -214,14 +221,27 @@ export function apply(ctx, config) {
     const last = state.lastLabel === ''
       ? '还没有触发过'
       : `最近 ${clock(state.lastAt)} ${String(state.lastKind)} ${state.lastLabel}`
+    const click = clickReady() ? '开' : '关'
     return `通知中：${active.join(' + ')} · 审批 ${String(state.approvals ?? 0)} · 提问 ${String(state.questions ?? 0)}`
-      + ` · 完成 ${String(state.finishes ?? 0)} · 出错 ${String(state.errors ?? 0)} · ${last}`
+      + ` · 完成 ${String(state.finishes ?? 0)} · 出错 ${String(state.errors ?? 0)} · ${last} · 点击切回${click}`
   }
 
   /** Multi-line diagnostics for the settings page. */
   const detailLine = () => {
     const parts = []
-    parts.push(`渠道：osascript display notification（横幅在系统里显示为「脚本编辑器 / Script Editor」）${read('sound') === true ? '，提示音随横幅交给系统播放' : '，不播放提示音'}`)
+    const clickable = read('clickable') === true
+    if (clickable && helperAvailable()) {
+      parts.push('渠道：优先 DSH Notify 横幅（可点击，点击把 DSH 切到前台；首次会请求一次通知授权，被拒绝时自动退回 osascript 兼容通道）')
+    } else if (clickable) {
+      parts.push('渠道：点击通道不可用（缺少 helper，请重装插件或关闭「点击切回」改用兼容通道）')
+    } else {
+      parts.push('渠道：osascript 兼容横幅（系统里显示为「脚本编辑器」，不能点击）')
+    }
+    if (lastHelper === 'denied') {
+      parts.push('最近一次：DSH Notify 的通知权限被拒绝，已改用兼容通道；在系统设置 → 通知 → DSH Notify 允许后自动恢复可点击')
+    }
+    parts.push(read('sound') === true ? '提示音随横幅交给系统播放' : '不播放提示音')
+    if (lastChannel !== '') parts.push(`本次走 ${lastChannel === 'helper' ? 'DSH Notify' : 'osascript'}`)
     const app = frontmost()
     parts.push(`前台：${app.name === '' ? (app.bundleId === '' ? '未知' : app.bundleId) : app.name}${read('skipWhenFocused') === true ? '（DSH 在前台时跳过「完成」提醒）' : ''}`)
     if (lastBanner !== '') parts.push(`横幅：${lastBanner}`)
@@ -243,6 +263,20 @@ export function apply(ctx, config) {
   }
 
   /**
+   * The advertised web GUI URL, used as the click target when only `dsh web`
+   * runs (no desktop app to activate).
+   * @returns {string} authenticated URL, or an empty string.
+   */
+  const guiUrl = () => {
+    try {
+      const url = ctx.get('webApp')?.getAdvertisedUrl?.()
+      return typeof url === 'string' ? url : ''
+    } catch {
+      return ''
+    }
+  }
+
+  /**
    * Show one notification and record it.
    * @param {'审批'|'提问'|'完成'|'出错'|'自检'} kind - event kind.
    * @param {{ title: string, subtitle?: string, body: string }} message - content.
@@ -251,7 +285,15 @@ export function apply(ctx, config) {
    */
   const send = async (kind, message, tone) => {
     if (!isSupported()) return { ok: false, banner: '仅支持 macOS', sound: 'off', error: '仅支持 macOS' }
-    const outcome = await deliver(message, { sound: read('sound') === true, tone })
+    const outcome = await deliver(message, {
+      sound: read('sound') === true,
+      tone,
+      click: read('clickable') === true,
+      bundleId: DSH_BUNDLE_ID,
+      url: guiUrl(),
+    })
+    lastChannel = outcome.channel
+    lastHelper = outcome.helper ?? ''
     lastBanner = outcome.banner === 'submitted' ? `已提交给通知中心（${clock(new Date().toISOString())}）` : outcome.banner
     lastError = outcome.ok ? '' : String(outcome.banner)
     trace(`notify(${kind}) banner=${outcome.banner} sound=${outcome.sound} title=${message.title}`)
@@ -444,7 +486,7 @@ export function apply(ctx, config) {
   const TEST_MESSAGE = {
     title: 'DSH 通知自检',
     subtitle: '测试通知',
-    body: '看到这条横幅就说明通道可用；审批、提问、完成、出错会用同样的方式提醒你。',
+    body: '看到这条横幅就说明通道可用；点一下横幅会把 DSH 切到前台。审批、提问、完成、出错都用同样的方式提醒你。',
   }
 
   /**
@@ -456,7 +498,11 @@ export function apply(ctx, config) {
     return {
       ...outcome,
       message: outcome.ok
-        ? '测试通知已提交给通知中心。若没有横幅，检查系统设置里「脚本编辑器 / Script Editor」的通知权限与专注模式。'
+        ? (outcome.channel === 'helper'
+          ? '测试通知已提交。首次会弹出「DSH Notify 想发送通知」的授权，允许后横幅可点击；点横幅把 DSH 切到前台。若没有横幅，检查系统设置里 DSH Notify 的通知权限与专注模式。'
+          : (outcome.helper === 'denied'
+            ? '测试通知走了兼容通道：「DSH Notify」的通知权限被拒绝。打开「系统通知设置」允许它，之后会自动切回可点击的横幅。'
+            : '测试通知已提交（兼容通道：横幅显示为「脚本编辑器」，不能点击）。若没有横幅，检查系统设置里「脚本编辑器 / Script Editor」的权限与专注模式。'))
         : `测试通知失败：${String(outcome.banner)}`,
     }
   }
@@ -573,6 +619,7 @@ export function apply(ctx, config) {
           errors: { type: 'boolean' },
           sound: { type: 'boolean' },
           skipWhenFocused: { type: 'boolean' },
+          clickable: { type: 'boolean' },
           approvalsSeen: { type: 'integer' },
           questionsSeen: { type: 'integer' },
           finishesSeen: { type: 'integer' },
@@ -592,6 +639,7 @@ export function apply(ctx, config) {
           'errors',
           'sound',
           'skipWhenFocused',
+          'clickable',
           'approvalsSeen',
           'questionsSeen',
           'finishesSeen',
@@ -609,7 +657,7 @@ export function apply(ctx, config) {
           `审批 ${value.approvalsSeen} · 提问 ${value.questionsSeen} · 完成 ${value.finishesSeen} · 出错 ${value.errorsSeen}`
             + ` · 最近 ${value.lastEvent === '' ? '还没有触发过' : value.lastEvent}`,
           `开关：总开关${value.enabled ? '开' : '关'} · 审批${value.approvals ? '开' : '关'} · 提问${value.questions ? '开' : '关'}`
-            + ` · 完成${value.finishes ? '开' : '关'} · 出错${value.errors ? '开' : '关'} · 提示音${value.sound ? '开' : '关'}`,
+            + ` · 完成${value.finishes ? '开' : '关'} · 出错${value.errors ? '开' : '关'} · 提示音${value.sound ? '开' : '关'} · 点击切回${value.clickable ? '开' : '关'}`,
           `前台：${value.frontmost}`,
         ]
         if (value.message !== '') lines.push(value.message)
@@ -638,12 +686,15 @@ export function apply(ctx, config) {
         errors: read('errors') === true,
         sound: read('sound') === true,
         skipWhenFocused: read('skipWhenFocused') === true,
+        clickable: read('clickable') === true,
         approvalsSeen: Number(state.approvals ?? 0),
         questionsSeen: Number(state.questions ?? 0),
         finishesSeen: Number(state.finishes ?? 0),
         errorsSeen: Number(state.errors ?? 0),
         lastEvent: lastEvent(),
-        channel: `osascript display notification${read('sound') === true ? ' + 系统提示音' : ''}`,
+        channel: clickReady()
+          ? `DSH Notify 横幅（点击切回 DSH）${read('sound') === true ? ' + 系统提示音' : ''}`
+          : `osascript display notification（不可点击）${read('sound') === true ? ' + 系统提示音' : ''}`,
         frontmost: frontmost().name === '' ? frontmost().bundleId : frontmost().name,
         message,
       }

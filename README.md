@@ -25,30 +25,33 @@ dsh plugin --profile <profile> add github:wphhyan/dsh-approval-notify
 
 ## 它会做什么
 
-- **提示音跟着横幅走**：`display notification … sound name` 把横幅和声音一起交给系统，提示音不会被插件侧的超时掐断，专注模式与静音照常生效。审批 Glass、提问 Ping、完成 Tink、出错 Basso。
+- **横幅可点击**：插件自带一个 60 KB 的 `DSH Notify` 小应用（源码在 `helper/`，构建脚本可复现），从它自己的身份发送横幅；点一下横幅就把 DSH 切到前台，只有 `dsh web` 在跑时则打开页面。首次使用会请求一次通知权限。
+- **提示音跟着横幅走**：`display notification … sound name` / `--sound` 把横幅和声音一起交给系统，提示音不会被插件侧的超时掐断，专注模式与静音照常生效。审批 Glass、提问 Ping、完成 Tink、出错 Basso。
 - **该安静时安静**：DSH 在前台时跳过「完成」提醒；同一会话 5 秒内只有一条完成提醒；「出错」5 分钟最多一条，每分钟都失败的定时任务刷不爆通知中心；同一 `callId` 3 秒内只提醒一次。
-- **设置页**在 **设置 → 插件 → 审批提醒**：七个开关（总开关、审批、提问、完成、出错、提示音、前台跳过）、四类计数、最近一次事件，以及四个按钮——**发送测试通知**、**自检**、**打开系统通知设置**、**刷新**。
+- **设置页**在 **设置 → 插件 → 审批提醒**：八个开关（总开关、审批、提问、完成、出错、提示音、前台跳过、点击切回）、四类计数、最近一次事件，以及四个按钮——**发送测试通知**、**自检**、**打开系统通知设置**、**刷新**。
 - **给 Agent 的工具**：`approval_notify`，支持 `status`、`test`、`diagnose`。
 
 ## 送达与限制
 
-- 渠道是 `osascript display notification`，所以 macOS 会把横幅归到 **「脚本编辑器 / Script Editor」** 名下，而不是 DSH。这是 AppleScript 的标准行为，也是本插件唯一不需要第三方二进制的通道。
+- **点击切回**开启时，横幅由自带的 `DSH Notify` 应用发出，系统里显示为「DSH Notify」，点击把 DSH 切到前台。第一次发送会请求一次通知授权；被拒绝时插件自动退回兼容通道（横幅照样出现，只是显示为「脚本编辑器」且不能点击），在系统设置 → 通知 → DSH Notify 里允许后自动恢复。
+- **点击切回**关闭（或 helper 缺失）时，退回 `osascript display notification`：无需授权，但 macOS 会把横幅归到 **「脚本编辑器 / Script Editor」** 名下，且不能点击。这条通道始终保留，是兜底。
+- 两种通道都需要系统通知权限与未开启专注模式；被静音时都会静默丢弃。
 - 退出码 0 只代表通知服务**接受了请求**，不代表你看见了：专注模式、在系统设置里把「脚本编辑器」静音、锁屏，都会静默丢弃。插件如实写"已提交"，不假装"已送达"。
-- 横幅不能点击跳转：AppleScript 通知没有动作。
 - 仅 macOS。其他平台上工具会报告渠道不可用。
 - 在「完全访问」权限模式下永远不会触发审批提醒：它直接拒绝需要审批的操作，根本不存在要广播的请求。要验证这条通道，切到「只读」或「工作区写入」。
 - 插件只写自己的计数（`plugin-data/dsh-approval-notify/`）和自己的 volatile 配置字段，不直接改 profile 的 patch 文件。
 
 ## 排错
 
-1. **设置 → 插件 → 审批提醒 → 发送测试通知**：有横幅说明通道可用。
+1. **设置 → 插件 → 审批提醒 → 发送测试通知**：有横幅说明通道可用；第一次会先弹「DSH Notify 想发送通知」的授权，点允许。
 2. **自检**会额外报告前台应用与提示音结果。
-3. **打开系统通知设置**跳到 macOS 面板，确认「脚本编辑器」未被静音、没开专注模式。
+3. **打开系统通知设置**跳到 macOS 面板，确认「DSH Notify」（或兼容通道的「脚本编辑器」）未被静音、没开专注模式。
 4. 看 `~/.dsh/profiles/<profile>/plugin-data/dsh-approval-notify/debug.log` 里的 `notify(...)` 行，以及 `state.json` 的计数。
 
 ## 实现
 
-- `lib/notify.js` —— AppleScript 生成与转义、`osascript` 执行、脚本被拒时用 `afplay` 兜底。
+- `lib/notify.js` —— 优先启动 `helper/DSHNotify.app`（可点击、能处理点击切回），失败或关闭时退回 AppleScript + `osascript`，脚本被拒时用 `afplay` 兜底。
+- `helper/dsh-notify.m` —— 60 行 Objective-C：投递 `NSUserNotification`、保持 run loop 等待点击、点击后激活 `com.deepseek.dsh` 或打开 Web GUI；`helper/build.sh` 用 clang 编译 universal（arm64 + x86_64）并 ad-hoc 签名。
 - `lib/system.js` —— 用 `lsappinfo` 判断前台应用（1 秒缓存）、打开系统通知面板。
 - `lib/state.js` —— `plugin-data` 下的原子计数与最近事件，兼容旧版状态文档。
 - `client.js` —— 设置页，通过 `ctx.remote.settings` 读写本插件的设置命名空间。
