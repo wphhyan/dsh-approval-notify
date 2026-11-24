@@ -1,5 +1,4 @@
 - insert:
     - id: approval-notify
-      name: '@local/dsh-approval-notify'
+      name: dsh-approval-notify
       config: {}
-# Host rows are inserted by the bundle; the config is written back by the plugin itself.

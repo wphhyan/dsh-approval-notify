@@ -1,17 +1,31 @@
 {
-  "name": "@local/dsh-approval-notify",
-  "version": "1.2.0",
-  "private": true,
+  "name": "dsh-approval-notify",
+  "version": "1.3.0",
+  "description": "macOS Notification Center alerts for the four moments a DSH agent waits on you: a tool approval, an ask_user_question prompt, a finished turn, and a session error.",
   "type": "module",
-  "description": "macOS notifications for the moments an agent stops and waits for you: a tool approval, an ask_user_question prompt, a Session that finished a turn, and a Session error — with a settings page under Settings → Plugins.",
+  "license": "MIT",
+  "author": "wphhyan",
+  "homepage": "https://github.com/wphhyan/dsh-approval-notify#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wphhyan/dsh-approval-notify.git"
+  },
+  "bugs": {
+    "url": "https://github.com/wphhyan/dsh-approval-notify/issues"
+  },
   "keywords": [
     "dsh-plugin",
     "dsh",
     "deepseek-harness",
+    "deepseek",
     "macos",
     "notification",
-    "approval"
+    "approval",
+    "desktop-notification"
   ],
+  "engines": {
+    "dsh": ">=0.2.2-rc.5 <0.3.0"
+  },
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
@@ -25,7 +39,9 @@
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",
-    "README.md"
+    "README.md",
+    "README.zh.md",
+    "LICENSE"
   ],
   "dsh": {
     "bundle": {
