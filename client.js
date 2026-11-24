@@ -117,7 +117,12 @@ window.__ModuleLoader__.load({
       {
         key: 'clickable',
         name: '点击横幅切回 DSH',
-        hint: '横幅由自带的 DSH Notify 小应用发送，点击即把 DSH 切到前台；首次会请求一次通知权限，被拒绝时自动退回兼容通道。关掉后同样走 osascript 兼容通道：无需授权，但横幅显示为「脚本编辑器」且不能点击。',
+        hint: '横幅由自带的 DSH Notify 小应用发送，点击即把 DSH 切到前台。需要一次通知授权：点页面下方的「请求通知授权」显式发起，通知本身永远不会弹授权框；没授权时自动走兼容通道。',
+      },
+      {
+        key: 'scheduled',
+        name: '定时任务也提醒',
+        hint: '默认关：定时任务（@michengai/dsh-automation）产生的会话不发完成 / 出错提醒，避免每分钟跑一次的坏任务刷屏。',
       },
     ]
 
@@ -251,6 +256,11 @@ window.__ModuleLoader__.load({
           h('button', {
             style: busy ? { ...styles.button, ...styles.busy } : styles.button,
             disabled: busy,
+            onClick: () => void write({ authorizeNow: true }),
+          }, '请求通知授权'),
+          h('button', {
+            style: busy ? { ...styles.button, ...styles.busy } : styles.button,
+            disabled: busy,
             onClick: () => void write({ openSettingsNow: true }),
           }, '打开系统通知设置'),
           h('button', {
@@ -260,8 +270,8 @@ window.__ModuleLoader__.load({
           }, '刷新'),
         ),
         h('div', { style: styles.hint },
-          '点击切回开启时，横幅在系统里显示为「DSH Notify」，第一次会请求通知授权；'
-          + '关闭时显示为「脚本编辑器 / Script Editor」，不能点击。'
+          '点击切回开启时，横幅在系统里显示为「DSH Notify」；授权只在点「请求通知授权」时请求，'
+          + '通知不会再自己弹授权框。关闭或未授权时显示为「脚本编辑器 / Script Editor」，不能点击。'
           + '收不到时先看系统设置 → 通知里对应的应用是否被静音，再看是否开着专注模式。'),
         enabled ? null : h('div', { style: styles.hint }, '总开关关着：下面的事件开关保存了也不会发通知。'),
         error === null ? null : h('div', { style: styles.error }, error),

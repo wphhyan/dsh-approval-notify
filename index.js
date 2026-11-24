@@ -16,7 +16,7 @@
 
 import path from 'node:path'
 import { createRequire } from 'node:module'
-import { TONES, deliver, helperAvailable, isSupported, truncate } from './lib/notify.js'
+import { TONES, deliver, helperAvailable, isSupported, requestAuthorization, truncate } from './lib/notify.js'
 import { readState, trace, writeState } from './lib/state.js'
 import { DSH_BUNDLE_ID, dshIsFrontmost, frontmost, openNotificationSettings } from './lib/system.js'
 
@@ -61,7 +61,11 @@ export const Config = z.object({
   skipWhenFocused: z.boolean().default(true).volatile()
     .description('DSH 在前台时不发「完成」提醒；审批与提问不受此开关影响。'),
   clickable: z.boolean().default(true).volatile()
-    .description('横幅可点击：点击后把 DSH 切到前台，横幅显示为「DSH Notify」，首次会请求一次通知权限。关闭后走 osascript 兼容通道：无需授权，但显示为「脚本编辑器」且不能点击。'),
+    .description('横幅可点击：点击后把 DSH 切到前台，横幅显示为「DSH Notify」。需要一次通知授权，用「请求通知授权」按钮显式发起，通知本身永远不会弹授权框；未授权时自动走 osascript 兼容通道。'),
+  scheduled: z.boolean().default(false).volatile()
+    .description('定时任务产生的会话（@michengai/dsh-automation 的 dsh-automation-session-*）也发完成 / 出错提醒。默认关，避免每分钟跑一次的定时任务刷屏。'),
+  authorizeNow: z.boolean().default(false).volatile()
+    .description('「请求通知授权」：打开后向 macOS 请求一次 DSH Notify 的通知权限，完成后自动关闭。'),
   testNow: z.boolean().default(false).volatile()
     .description('「发送测试通知」：打开后立即发一条测试通知，完成或失败后自动关闭。'),
   diagnoseNow: z.boolean().default(false).volatile()
@@ -82,6 +86,18 @@ const FINISH_QUIET_MS = 5000
 
 /** A broken automation can fail every minute; one error banner per window is enough. */
 const ERROR_QUIET_MS = 5 * 60 * 1000
+
+/** Session ids created by the scheduling plugin; they are runs, not human waits. */
+const SCHEDULED_PREFIX = 'dsh-automation-session-'
+
+/**
+ * Whether a Session was started by a scheduled task rather than by the user.
+ * @param {string} sessionId - Session id.
+ * @returns {boolean} true for automation runs.
+ */
+function isScheduledRun(sessionId) {
+  return sessionId.startsWith(SCHEDULED_PREFIX)
+}
 
 /** Which counter a delivered notification advances. */
 const COUNTERS = {
@@ -209,6 +225,7 @@ export function apply(ctx, config) {
 
   /** Whether the clickable helper can actually deliver right now. */
   const clickReady = () => read('clickable') === true && helperAvailable()
+    && lastHelper !== 'unauthorized' && lastHelper !== 'denied'
 
   /** One-line status shared by the settings page and the tool. */
   const statusLine = () => {
@@ -237,9 +254,12 @@ export function apply(ctx, config) {
     } else {
       parts.push('渠道：osascript 兼容横幅（系统里显示为「脚本编辑器」，不能点击）')
     }
-    if (lastHelper === 'denied') {
-      parts.push('最近一次：DSH Notify 的通知权限被拒绝，已改用兼容通道；在系统设置 → 通知 → DSH Notify 允许后自动恢复可点击')
+    if (lastHelper === 'unauthorized') {
+      parts.push('最近一次：DSH Notify 还没拿到通知授权，已用兼容通道；点「请求通知授权」或在系统设置 → 通知 → DSH Notify 里允许后即可点击')
+    } else if (lastHelper === 'denied') {
+      parts.push('最近一次：DSH Notify 的通知权限被拒绝，已用兼容通道；在系统设置 → 通知 → DSH Notify 允许后自动恢复可点击')
     }
+    if (read('scheduled') !== true) parts.push('定时任务产生的会话不提醒')
     parts.push(read('sound') === true ? '提示音随横幅交给系统播放' : '不播放提示音')
     if (lastChannel !== '') parts.push(`本次走 ${lastChannel === 'helper' ? 'DSH Notify' : 'osascript'}`)
     const app = frontmost()
@@ -393,6 +413,7 @@ export function apply(ctx, config) {
   const onSessionStatus = (sessionId, running) => {
     const id = String(sessionId ?? '')
     if (id === '') return
+    if (isScheduledRun(id) && read('scheduled') !== true) return
     if (running === true) {
       runningSince.set(id, Date.now())
       return
@@ -425,6 +446,7 @@ export function apply(ctx, config) {
     if (read('enabled') !== true || read('errors') !== true) return
     const id = String(sessionId ?? '')
     if (id === '') return
+    if (isScheduledRun(id) && read('scheduled') !== true) return
     if (suppressed(`error:${id}`)) return
     const now = Date.now()
     if (now - lastErrorNoticeAt < ERROR_QUIET_MS) {
@@ -542,6 +564,17 @@ export function apply(ctx, config) {
         })
         return
       }
+      if (read('authorizeNow') === true) {
+        const started = requestAuthorization()
+        await writeConfig({
+          authorizeNow: false,
+          status: started
+            ? `${statusLine()} 已请求通知授权，请在系统弹窗里点「允许」。`
+            : `${statusLine()} 无法发起授权请求：缺少 helper，请重装插件。`,
+          details: detailLine(),
+        })
+        return
+      }
       if (read('openSettingsNow') === true) {
         const opened = await openNotificationSettings()
         await writeConfig({
@@ -620,6 +653,7 @@ export function apply(ctx, config) {
           sound: { type: 'boolean' },
           skipWhenFocused: { type: 'boolean' },
           clickable: { type: 'boolean' },
+          scheduled: { type: 'boolean' },
           approvalsSeen: { type: 'integer' },
           questionsSeen: { type: 'integer' },
           finishesSeen: { type: 'integer' },
@@ -640,6 +674,7 @@ export function apply(ctx, config) {
           'sound',
           'skipWhenFocused',
           'clickable',
+          'scheduled',
           'approvalsSeen',
           'questionsSeen',
           'finishesSeen',
@@ -657,7 +692,8 @@ export function apply(ctx, config) {
           `审批 ${value.approvalsSeen} · 提问 ${value.questionsSeen} · 完成 ${value.finishesSeen} · 出错 ${value.errorsSeen}`
             + ` · 最近 ${value.lastEvent === '' ? '还没有触发过' : value.lastEvent}`,
           `开关：总开关${value.enabled ? '开' : '关'} · 审批${value.approvals ? '开' : '关'} · 提问${value.questions ? '开' : '关'}`
-            + ` · 完成${value.finishes ? '开' : '关'} · 出错${value.errors ? '开' : '关'} · 提示音${value.sound ? '开' : '关'} · 点击切回${value.clickable ? '开' : '关'}`,
+            + ` · 完成${value.finishes ? '开' : '关'} · 出错${value.errors ? '开' : '关'} · 提示音${value.sound ? '开' : '关'}`
+            + ` · 点击切回${value.clickable ? '开' : '关'} · 定时任务${value.scheduled ? '提醒' : '不提醒'}`,
           `前台：${value.frontmost}`,
         ]
         if (value.message !== '') lines.push(value.message)
@@ -687,6 +723,7 @@ export function apply(ctx, config) {
         sound: read('sound') === true,
         skipWhenFocused: read('skipWhenFocused') === true,
         clickable: read('clickable') === true,
+        scheduled: read('scheduled') === true,
         approvalsSeen: Number(state.approvals ?? 0),
         questionsSeen: Number(state.questions ?? 0),
         finishesSeen: Number(state.finishes ?? 0),

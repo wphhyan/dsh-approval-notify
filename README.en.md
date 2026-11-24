@@ -33,7 +33,8 @@ The market install is the same package: **Plugins → Discover**, search for `ds
 
 ## Delivery and limitations
 
-- With **clickable** on, the helper posts the banner and macOS shows it as **DSH Notify**; clicking it brings DSH to the front. The first delivery asks for the notification permission once; a denial falls back to the compatible channel automatically (banners still arrive, shown as Script Editor) until you allow DSH Notify in System Settings → Notifications.
+- With **clickable** on, the helper posts the banner and macOS shows it as **DSH Notify**; clicking it brings DSH to the front. The permission is requested only by the **Request notification permission** button in the settings page — a notification itself never opens an authorization dialog. Without permission, or after a denial, delivery falls back to the compatible channel automatically (banners still arrive, shown as Script Editor) until you allow DSH Notify in System Settings → Notifications.
+- **Scheduled runs stay quiet by default**: sessions created by `dsh-automation-session-*` (the scheduling plugin) do not raise finish or error reminders, so a broken one-minute task cannot fill the notification center; turn on **Also notify scheduled runs** when you want them.
 - With **clickable** off (or the helper missing), delivery falls back to `osascript display notification`: no permission prompt, but macOS attributes the banner to **Script Editor** (「脚本编辑器」) and it cannot be clicked. That channel stays as the safety net.
 - Exit code 0 means the notification server **accepted the request**, not that you saw it. Focus modes, muting Script Editor in System Settings, or a locked screen drop it silently, so the plugin reports "submitted" instead of "seen".
 - macOS only. On other platforms the tool reports the channel as unavailable.
@@ -42,7 +43,7 @@ The market install is the same package: **Plugins → Discover**, search for `ds
 
 ## Troubleshooting
 
-1. **Settings → Plugins → 审批提醒 → Send test notification.** If a banner appears, the channel works; the first one asks whether **DSH Notify** may send notifications — allow it.
+1. **Settings → Plugins → 审批提醒 → Request notification permission** (once; it shows the single system dialog), then **Send test notification**. If a banner appears, the channel works.
 2. **Self-check** also reports the frontmost app and the tone result.
 3. **Open system notification settings** jumps to the macOS pane; check that **DSH Notify** (or **Script Editor** for the fallback channel) is allowed and that a Focus mode is not on.
 4. Check `~/.dsh/profiles/<profile>/plugin-data/dsh-approval-notify/debug.log` for `notify(...)` lines, and `state.json` for the counters.

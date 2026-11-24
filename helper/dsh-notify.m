@@ -179,25 +179,21 @@ int main(int argc, const char *argv[]) {
       }];
     };
 
-    // Posting without authorization fails, so ask when the decision is still open.
+    // Never ask for authorization implicitly: a banner attempt must not pop a
+    // system dialog. `--request` is the only path that shows the prompt, and the
+    // settings page triggers it explicitly.
     [center getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings *settings) {
-      if (settings.authorizationStatus == UNAuthorizationStatusNotDetermined) {
-        [center requestAuthorizationWithOptions:(UNAuthorizationOptionAlert | UNAuthorizationOptionSound)
-                              completionHandler:^(BOOL granted, NSError *error) {
-          if (!granted) {
-            fprintf(stderr, "denied\n");
-            fflush(stderr);
-            exit(2);
-          }
-          post();
-        }];
-      } else if (settings.authorizationStatus == UNAuthorizationStatusDenied) {
+      if (settings.authorizationStatus == UNAuthorizationStatusDenied) {
         fprintf(stderr, "denied\n");
         fflush(stderr);
         exit(2);
-      } else {
-        post();
       }
+      if (settings.authorizationStatus == UNAuthorizationStatusNotDetermined) {
+        fprintf(stderr, "unauthorized\n");
+        fflush(stderr);
+        exit(4);
+      }
+      post();
     }];
 
     pump(timeout);
