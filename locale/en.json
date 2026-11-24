@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Approval notifications",
+    "description": "Announces the moments when an agent stops and waits for you: a tool call that needs approval, an ask_user_question prompt, a Session that finished its turn, and a Session that failed. Each event raises a macOS Notification Center banner, and the alert tone rides along with the banner so the system owns the audio. Approval requests only exist while the permission preset asks for approval (read-only or workspace-write); the default full-access preset rejects those actions outright, so nothing is announced. The finish reminder is on by default and is skipped while DSH is frontmost. The plugin only notifies: it never answers an approval or a question, and the banner does not open the session. Switches, a test notice and a self-check live in Settings → Plugins → Approval notifications."
+  }
+}

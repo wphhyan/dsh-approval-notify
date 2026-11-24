@@ -1,0 +1,38 @@
+{
+  "name": "@local/dsh-approval-notify",
+  "version": "1.2.0",
+  "private": true,
+  "type": "module",
+  "description": "macOS notifications for the moments an agent stops and waits for you: a tool approval, an ask_user_question prompt, a Session that finished a turn, and a Session error — with a settings page under Settings → Plugins.",
+  "keywords": [
+    "dsh-plugin",
+    "dsh",
+    "deepseek-harness",
+    "macos",
+    "notification",
+    "approval"
+  ],
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "lib",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  }
+}
