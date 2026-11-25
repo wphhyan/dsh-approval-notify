@@ -68,7 +68,11 @@ static NSString *const kDefaultBundleId = @"com.deepseek.dsh";
              withCompletionHandler:(void (^)(void))completionHandler {
   [self activateTarget];
   completionHandler();
-  exit(0);
+  // Give the framework a moment to finish the response before the app goes away.
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)),
+                 dispatch_get_main_queue(), ^{
+    exit(0);
+  });
 }
 
 @end
@@ -84,6 +88,14 @@ static NSString *valueAfter(NSArray<NSString *> *args, NSUInteger *index, NSStri
 
 /// Keep the run loop alive briefly so a completion handler can fire.
 static void pump(NSTimeInterval seconds) {
+  static BOOL launched = NO;
+  if (!launched) {
+    launched = YES;
+    // A click on an old banner launches this bundle; finishing the launch lets
+    // UserNotifications deliver the response and keeps LaunchServices from
+    // reporting a failed launch when main() returns moments later.
+    [NSApp finishLaunching];
+  }
   [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:seconds]];
 }
 
@@ -170,7 +182,13 @@ int main(int argc, const char *argv[]) {
     if (argc == 1) {
       delegate.bundleId = bundleId ?: kDefaultBundleId;
       delegate.focusUrl = @"dsh://open";
+      // The system launches this app to deliver the click on a banner whose
+      // posting process already exited. Wait for that response; the delegate
+      // activates DSH. If no response arrives (plain `open`), fall back to an
+      // activation so the launch still does something useful.
+      pump(2.0);
       [delegate activateTarget];
+      pump(0.3);
       return 0;
     }
 
@@ -178,6 +196,7 @@ int main(int argc, const char *argv[]) {
       delegate.bundleId = bundleId ?: kDefaultBundleId;
       delegate.focusUrl = focusUrl ?: @"dsh://open";
       [delegate activateTarget];
+      pump(0.3);
       return 0;
     }
 
