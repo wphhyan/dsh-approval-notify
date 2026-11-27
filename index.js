@@ -21,6 +21,7 @@ import { TONES, deliver, helperAuthorization, helperAvailable, isSupported, refr
 import { readState, trace, writeState } from './lib/state.js'
 import { fmt, texts } from './lib/messages.js'
 import { finishContent, finishSkipReason } from './lib/finish.js'
+import { sessionLabel } from './lib/session.js'
 import { DSH_BUNDLE_ID, dshIsFrontmost, frontmost, idleSeconds, openNotificationSettings } from './lib/system.js'
 
 export const name = 'approval-notify'
@@ -76,9 +77,23 @@ export const Config = z.object({
   sound: z.boolean().default(true).volatile()
     .description('通知随横幅播放提示音：审批 Glass、提问 Ping、完成 Tink、出错 Basso。'),
   skipWhenFocused: z.boolean().default(true).volatile()
-    .description('DSH 在前台时不发「完成」提醒；审批与提问不受此开关影响。'),
+    .description('已弃用：由 finishQuiet 取代；仅用于读取旧配置。'),
   idleOnly: z.boolean().default(false).volatile()
-    .description('只在用户离开键盘时发「完成」提醒：空闲满 60 秒才提醒，替代「DSH 在前台」判断（浏览器打开 GUI 时更准确）。'),
+    .description('已弃用：由 finishQuiet 取代；仅用于读取旧配置。'),
+  finishQuiet: z.string().default('').volatile()
+    .description('完成提醒的安静策略：focused（DSH 在前台时跳过）/ idle（离开键盘才提醒）/ off（不跳过）；空值兼容旧开关。'),
+  idleSeconds: z.number().default(60).volatile()
+    .description('空闲模式的阈值（秒）：空闲满这么久才发「完成」提醒。'),
+  finishCoalesceMs: z.number().default(4000).volatile()
+    .description('多个会话同时完成时的合并窗口（毫秒）。'),
+  errorSessionQuietMinutes: z.number().default(5).volatile()
+    .description('同一会话两次出错提醒的最短间隔（分钟）。'),
+  errorGlobalWindowMinutes: z.number().default(10).volatile()
+    .description('全局出错提醒窗口（分钟）。'),
+  errorGlobalMax: z.number().default(3).volatile()
+    .description('全局窗口内最多几条出错提醒。'),
+  redactDetails: z.boolean().default(false).volatile()
+    .description('通知内容从简：不在横幅里显示工具名、提问内容或会话名。'),
   clickable: z.boolean().default(true).volatile()
     .description('横幅可点击：点击后把 DSH 切到前台，横幅显示为「DSH Notify」。需要一次通知授权，用「请求通知授权」按钮显式发起，通知本身永远不会弹授权框；未授权时自动走 osascript 兼容通道。'),
   scheduled: z.boolean().default(false).volatile()
@@ -105,16 +120,10 @@ const DEDUPE_MS = 3000
 /** A Session that flaps running→idle→running keeps one finish reminder per interval. */
 const FINISH_QUIET_MS = 5000
 
-/** Sessions often finish together; one banner beats a burst of them. */
+/** Defaults for the user-visible thresholds; the live values come from Config. */
 const FINISH_COALESCE_MS = 4000
-
-/** Seconds of keyboard/mouse inactivity that count as "away" in idle mode. */
 const IDLE_SECONDS = 60
-
-/** One error banner per Session per window. */
 const ERROR_SESSION_QUIET_MS = 5 * 60 * 1000
-
-/** A global cap keeps unrelated failures from flooding the notification center. */
 const ERROR_GLOBAL_WINDOW_MS = 10 * 60 * 1000
 const ERROR_GLOBAL_MAX = 3
 
@@ -200,6 +209,8 @@ export function apply(ctx, config) {
   /** @type {{ id: string, label: string, startedAt: number, endedAt: number }[]} */
   let finishBatch = []
   let finishTimer
+  /** Serializes status writes so concurrent events cannot interleave. */
+  let publishQueue = Promise.resolve()
   let timer
 
   /** @param {string} field @returns {unknown} live value of an ordinary or volatile field. */
@@ -302,6 +313,37 @@ export function apply(ctx, config) {
     ? ''
     : `${clock(state.lastAt)} ${kindLabel(String(state.lastKind))} ${state.lastLabel}`
 
+  /** Clamp one numeric Config value, falling back when it is not a number. */
+  const clampNumber = (value, minimum, maximum, fallback) => {
+    const number = Number(value)
+    if (!Number.isFinite(number)) return fallback
+    return Math.min(maximum, Math.max(minimum, number))
+  }
+
+  /** Live idle threshold in seconds. */
+  const idleThreshold = () => clampNumber(read('idleSeconds'), 15, 3600, IDLE_SECONDS)
+
+  /** Live finish-batch window in milliseconds. */
+  const finishWindow = () => clampNumber(read('finishCoalesceMs'), 500, 30000, FINISH_COALESCE_MS)
+
+  /** Live per-Session error quiet period in milliseconds. */
+  const errorQuietMs = () => clampNumber(read('errorSessionQuietMinutes'), 1, 60, ERROR_SESSION_QUIET_MS / 60000) * 60000
+
+  /** Live global error window in milliseconds. */
+  const errorWindowMs = () => clampNumber(read('errorGlobalWindowMinutes'), 1, 120, ERROR_GLOBAL_WINDOW_MS / 60000) * 60000
+
+  /** Live global error cap. */
+  const errorLimit = () => Math.round(clampNumber(read('errorGlobalMax'), 1, 20, ERROR_GLOBAL_MAX))
+
+  /** Finish-reminder quiet strategy, honoring the deprecated boolean switches. */
+  const quietMode = () => {
+    const mode = read('finishQuiet')
+    if (mode === 'off' || mode === 'focused' || mode === 'idle') return mode
+    if (read('idleOnly') === true) return 'idle'
+    if (read('skipWhenFocused') === true) return 'focused'
+    return 'off'
+  }
+
   /** One-line status shared by the settings page and the tool. */
   const statusLine = () => {
     const t = text()
@@ -343,15 +385,17 @@ export function apply(ctx, config) {
     if (lastHelper === 'unauthorized') parts.push(t.detailLastUnauthorized)
     else if (lastHelper === 'denied') parts.push(t.detailLastDenied)
     if (read('scheduled') !== true) parts.push(t.detailScheduledOff)
+    if (read('redactDetails') === true) parts.push(t.detailRedacted)
     parts.push(read('sound') === true ? t.detailSoundOn : t.detailSoundOff)
     if (lastChannel !== '') {
       parts.push(fmt(t.detailChannelUsed, { channel: lastChannel === 'helper' ? 'DSH Notify' : 'osascript' }))
     }
     const app = frontmost()
     const appName = app.name === '' ? (app.bundleId === '' ? t.authUnknown : app.bundleId) : app.name
-    if (read('idleOnly') === true) {
-      parts.push(fmt(t.detailFrontmostIdle, { app: appName, idle: Math.round(idleSeconds()) }))
-    } else if (read('skipWhenFocused') === true) {
+    const mode = quietMode()
+    if (mode === 'idle') {
+      parts.push(fmt(t.detailFrontmostIdle, { app: appName, idle: Math.round(idleSeconds()), threshold: idleThreshold() }))
+    } else if (mode === 'focused') {
       parts.push(fmt(t.detailFrontmostFocus, { app: appName }))
     } else {
       parts.push(fmt(t.detailFrontmostPlain, { app: appName }))
@@ -373,13 +417,26 @@ export function apply(ctx, config) {
    * @param {{ force?: boolean }} [options] - bypass the throttle.
    * @returns {Promise<void>} completion.
    */
-  const publish = async (message, options = {}) => {
+  const publishNow = async (message, options = {}) => {
     const status = `${statusLine()}${message === undefined || message === '' ? '' : ` ${message}`}`
     const details = detailLine()
     if (read('status') === status && read('details') === details) return
     if (options.force !== true && Date.now() - lastPublishAt < 15000) return
     const written = await writeConfig({ status, details })
     if (written) lastPublishAt = Date.now()
+  }
+
+  /**
+   * Queue one status publish. A single writer keeps two events from racing the
+   * same config patch; the chain survives a failed write so later publishes run.
+   * @param {string} [message] - extra sentence appended to the status line.
+   * @param {{ force?: boolean }} [options] - bypass the throttle.
+   * @returns {Promise<void>} completion.
+   */
+  const publish = (message, options = {}) => {
+    const task = publishQueue.then(() => publishNow(message, options))
+    publishQueue = task.catch(() => {})
+    return task
   }
 
   /**
@@ -477,8 +534,13 @@ export function apply(ctx, config) {
       : typeof fallback === 'string' && fallback !== ''
         ? fallback
         : typeof request?.reason === 'string' ? request.reason : ''
-    const body = reason === '' ? fmt(t.notifyApprovalBody, { tool }) : truncate(reason)
-    await send('审批', { title: t.notifyApprovalTitle, subtitle: truncate(tool, 60), body }, TONES.approval)
+    const redact = read('redactDetails') === true
+    const body = redact ? t.notifyApprovalPrivateBody : (reason === '' ? fmt(t.notifyApprovalBody, { tool }) : truncate(reason))
+    await send('审批', {
+      title: t.notifyApprovalTitle,
+      subtitle: redact ? undefined : truncate(tool, 60),
+      body,
+    }, TONES.approval)
   }
 
   /**
@@ -495,7 +557,12 @@ export function apply(ctx, config) {
     const body = truncate(items.map(item => (typeof item?.question === 'string' ? item.question : '')).filter(Boolean).join(' / '))
     if (body === '') return
     const t = text()
-    await send('提问', { title: t.notifyQuestionTitle, subtitle: header === undefined ? undefined : truncate(header, 60), body }, TONES.question)
+    const redact = read('redactDetails') === true
+    await send('提问', {
+      title: t.notifyQuestionTitle,
+      subtitle: redact || header === undefined ? undefined : truncate(header, 60),
+      body: redact ? t.notifyQuestionPrivateBody : body,
+    }, TONES.question)
   }
 
   /**
@@ -510,10 +577,7 @@ export function apply(ctx, config) {
       labels.delete(id)
       return
     }
-    const directory = typeof summary?.cwd === 'string' && summary.cwd !== ''
-      ? path.basename(summary.cwd)
-      : ''
-    labels.set(id, directory === '' ? id.slice(0, 12) : directory)
+    labels.set(id, sessionLabel(id, summary?.cwd))
     cap(labels)
   }
 
@@ -531,14 +595,13 @@ export function apply(ctx, config) {
     finishBatch = []
     if (read('enabled') !== true || read('finishes') !== true) return
     const t = text()
-    const idleOnly = read('idleOnly') === true
-    const idle = idleOnly ? idleSeconds() : 0
+    const mode = quietMode()
+    const idle = mode === 'idle' ? idleSeconds() : 0
     const skip = finishSkipReason({
-      idleOnly,
+      mode,
       idleSeconds: idle,
-      idleThreshold: IDLE_SECONDS,
-      focused: idleOnly ? false : dshIsFrontmost(),
-      skipWhenFocused: read('skipWhenFocused') === true,
+      idleThreshold: idleThreshold(),
+      focused: mode === 'focused' ? dshIsFrontmost() : false,
     })
     if (skip === 'idle') {
       lastSkip = fmt(t.skipIdle, { idle: Math.round(idle) })
@@ -554,6 +617,7 @@ export function apply(ctx, config) {
       fmt,
       language: language(),
       formatDuration: milliseconds => duration(milliseconds, t),
+      redact: read('redactDetails') === true,
     })
     void send('完成', content, TONES.finish, content.count)
       .catch(error => trace(`finish notify failed: ${error?.stack ?? String(error)}`))
@@ -593,7 +657,7 @@ export function apply(ctx, config) {
       finishTimer = setTimeout(() => {
         finishTimer = undefined
         flushFinishes()
-      }, FINISH_COALESCE_MS)
+      }, finishWindow())
     }
   }
 
@@ -613,22 +677,28 @@ export function apply(ctx, config) {
     cap(lastErrorAt)
     if (suppressed(`error:${id}`)) return
     const now = Date.now()
-    if (now - seenAt < ERROR_SESSION_QUIET_MS) {
+    if (now - seenAt < errorQuietMs()) {
       lastSkip = text().skipSessionError
       return
     }
-    const recent = errorNoticeTimes.filter(at => now - at < ERROR_GLOBAL_WINDOW_MS)
+    const recent = errorNoticeTimes.filter(at => now - at < errorWindowMs())
     errorNoticeTimes.length = 0
     errorNoticeTimes.push(...recent)
-    if (errorNoticeTimes.length >= ERROR_GLOBAL_MAX) {
-      lastSkip = fmt(text().skipErrorCap, { max: ERROR_GLOBAL_MAX })
+    if (errorNoticeTimes.length >= errorLimit()) {
+      lastSkip = fmt(text().skipErrorCap, { max: errorLimit() })
       return
     }
     errorNoticeTimes.push(now)
     const label = labels.get(id) ?? id.slice(0, 12)
     const t = text()
-    const body = truncate(typeof message === 'string' && message !== '' ? message : t.errorFallbackBody)
-    void send('出错', { title: t.notifyErrorTitle, subtitle: truncate(label, 60), body }, TONES.error)
+    const redact = read('redactDetails') === true
+    const body = redact ? t.errorPrivateBody
+      : truncate(typeof message === 'string' && message !== '' ? message : t.errorFallbackBody)
+    void send('出错', {
+      title: t.notifyErrorTitle,
+      subtitle: redact ? undefined : truncate(label, 60),
+      body,
+    }, TONES.error)
       .catch(error => trace(`error notify failed: ${error?.stack ?? String(error)}`))
   }
 
@@ -944,7 +1014,7 @@ export function apply(ctx, config) {
         finishes: read('finishes') === true,
         errors: read('errors') === true,
         sound: read('sound') === true,
-        skipWhenFocused: read('skipWhenFocused') === true,
+        skipWhenFocused: quietMode() === 'focused',
         clickable: read('clickable') === true,
         scheduled: read('scheduled') === true,
         approvalsSeen: Number(state.approvals ?? 0),

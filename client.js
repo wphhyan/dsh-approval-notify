@@ -23,6 +23,33 @@ window.__ModuleLoader__.load({
       status: { fontSize: '14px', lineHeight: 1.55, color: 'var(--dsw-alias-label-primary)' },
       detail: { fontSize: '12px', lineHeight: 1.5, color: 'var(--dsw-alias-label-secondary)' },
       row: { display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'center' },
+      fieldRow: {
+        display: 'flex',
+        gap: '12px',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        padding: '6px 0',
+      },
+      fieldText: { display: 'flex', flexDirection: 'column', gap: '2px', flex: '1 1 auto' },
+      select: {
+        minWidth: '220px',
+        padding: '6px 10px',
+        borderRadius: '8px',
+        border: '1px solid var(--dsw-alias-border-l2)',
+        background: 'var(--dsw-alias-bg-layer-2)',
+        color: 'var(--dsw-alias-label-primary)',
+        fontSize: '13px',
+      },
+      input: {
+        width: '110px',
+        padding: '6px 10px',
+        borderRadius: '8px',
+        border: '1px solid var(--dsw-alias-border-l2)',
+        background: 'var(--dsw-alias-bg-layer-2)',
+        color: 'var(--dsw-alias-label-primary)',
+        fontSize: '13px',
+        textAlign: 'right',
+      },
       switchRow: {
         display: 'flex',
         gap: '12px',
@@ -92,6 +119,19 @@ window.__ModuleLoader__.load({
         buttonDiagnose: '自检',
         buttonSettings: '打开系统通知设置',
         buttonRefresh: '刷新',
+        labelFinishQuiet: '完成提醒策略',
+        quietOff: '不跳过',
+        quietFocused: 'DSH 在前台时跳过',
+        quietIdle: '离开键盘时才提醒',
+        labelThresholds: '阈值',
+        idleSecondsLabel: '空闲阈值（秒）',
+        idleSecondsHint: '「离开键盘」模式下，空闲满这么久才发完成提醒。',
+        finishCoalesceLabel: '完成合并窗口（秒）',
+        finishCoalesceHint: '这段时间内结束的多个会话会合并成一条横幅。',
+        errorQuietLabel: '同会话出错间隔（分钟）',
+        errorQuietHint: '同一个会话在这段时间内最多一条出错提醒。',
+        errorMaxLabel: '10 分钟内最多出错提醒',
+        errorMaxHint: '全局上限，防止坏任务刷屏。',
         hintBanner: '点击切回开启时，横幅在系统里显示为「DSH Notify」；授权只在点「请求通知授权」时请求，通知不会再自己弹授权框。关闭或未授权时显示为「脚本编辑器 / Script Editor」，不能点击。收不到时先看系统设置 → 通知里对应的应用是否被静音，再看是否开着专注模式。',
         hintMasterOff: '总开关关着：下面的事件开关保存了也不会发通知。',
         errorChannel: '读取设置通道失败：{reason}',
@@ -117,6 +157,8 @@ window.__ModuleLoader__.load({
         switchIdleHint: '改用系统空闲时间：空闲满 60 秒才发「完成」提醒。浏览器打开 GUI 时比「DSH 在前台」更准确，开启后替代上面的前台跳过。',
         switchClickableName: '点击横幅切回 DSH',
         switchClickableHint: '横幅由自带的 DSH Notify 小应用发送，点击即把 DSH 切到前台。需要一次通知授权：点页面下方的「请求通知授权」显式发起，通知本身永远不会弹授权框；没授权时自动走兼容通道。',
+        switchRedactName: '通知内容从简',
+        switchRedactHint: '不在横幅里显示工具名、提问内容和会话名；只提示有事件，回到 DSH 查看。',
         switchScheduledName: '定时任务也提醒',
         switchScheduledHint: '默认关：定时任务（@michengai/dsh-automation）产生的会话不发完成 / 出错提醒，避免每分钟跑一次的坏任务刷屏。',
       },
@@ -133,6 +175,19 @@ window.__ModuleLoader__.load({
         buttonDiagnose: 'Self-check',
         buttonSettings: 'Open system notification settings',
         buttonRefresh: 'Refresh',
+        labelFinishQuiet: 'Finish reminder policy',
+        quietOff: 'Do not skip',
+        quietFocused: 'Skip while DSH is frontmost',
+        quietIdle: 'Only remind me when I am away',
+        labelThresholds: 'Thresholds',
+        idleSecondsLabel: 'Idle threshold (seconds)',
+        idleSecondsHint: 'In away mode, finish reminders need this much keyboard/mouse inactivity.',
+        finishCoalesceLabel: 'Finish merge window (seconds)',
+        finishCoalesceHint: 'Sessions finishing within this window are merged into one banner.',
+        errorQuietLabel: 'Error interval per session (minutes)',
+        errorQuietHint: 'At most one error reminder per session within this period.',
+        errorMaxLabel: 'Max error reminders per 10 minutes',
+        errorMaxHint: 'A global cap so a broken task cannot flood the notification center.',
         hintBanner: 'With click-to-focus on, the banner is shown as "DSH Notify"; permission is requested only by Request notification permission, and a notification never opens an authorization dialog by itself. Off — or unauthorized — falls back to Script Editor, which cannot be clicked. If nothing appears, check the matching app in System Settings → Notifications and any Focus mode.',
         hintMasterOff: 'The master switch is off: event switches save, but nothing is sent.',
         errorChannel: 'Settings channel failed: {reason}',
@@ -158,6 +213,8 @@ window.__ModuleLoader__.load({
         switchIdleHint: 'Uses the system idle time: finish reminders need 60s of keyboard/mouse inactivity. More accurate than the frontmost check when the GUI runs in a browser; this replaces the check above.',
         switchClickableName: 'Click a banner to return to DSH',
         switchClickableHint: 'The bundled DSH Notify helper posts the banner; clicking it brings DSH forward. It needs a notification permission once — request it explicitly with Request notification permission; a notification never opens that dialog itself. Unauthorized falls back to the compatible channel.',
+        switchRedactName: 'Simplified notification content',
+        switchRedactHint: 'Hide tool names, question text and session names from banners; just say something happened and return to DSH.',
         switchScheduledName: 'Also announce scheduled runs',
         switchScheduledHint: 'Off by default: sessions created by the scheduling plugin skip finish and error reminders, so a broken one-minute task cannot fill the notification center.',
       },
@@ -171,8 +228,7 @@ window.__ModuleLoader__.load({
       { key: 'finishes', nameKey: 'switchFinishesName', hintKey: 'switchFinishesHint' },
       { key: 'errors', nameKey: 'switchErrorsName', hintKey: 'switchErrorsHint' },
       { key: 'sound', nameKey: 'switchSoundName', hintKey: 'switchSoundHint' },
-      { key: 'skipWhenFocused', nameKey: 'switchFocusedName', hintKey: 'switchFocusedHint' },
-      { key: 'idleOnly', nameKey: 'switchIdleName', hintKey: 'switchIdleHint' },
+      { key: 'redactDetails', nameKey: 'switchRedactName', hintKey: 'switchRedactHint', defaultOn: false },
       { key: 'clickable', nameKey: 'switchClickableName', hintKey: 'switchClickableHint' },
       { key: 'scheduled', nameKey: 'switchScheduledName', hintKey: 'switchScheduledHint' },
     ]
@@ -242,6 +298,35 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * One numeric threshold row, committed on blur/Enter.
+     * @param {{ label: string, hint: string, value: number, min: number, max: number, disabled: boolean, onCommit: (value: number) => void }} props - field props.
+     */
+    function NumberField({ label, hint, value, min, max, disabled, onCommit }) {
+      const [draft, setDraft] = useState(String(value))
+      useEffect(() => { setDraft(String(value)) }, [value])
+      return h('label', { style: styles.fieldRow },
+        h('div', { style: styles.fieldText },
+          h('div', { style: styles.name }, label),
+          hint === '' ? null : h('div', { style: styles.hint }, hint),
+        ),
+        h('input', {
+          style: styles.input,
+          type: 'number',
+          min,
+          max,
+          value: draft,
+          disabled,
+          onChange: event => setDraft(event.target.value),
+          onBlur: () => {
+            const number = Number(draft)
+            if (Number.isFinite(number)) void onCommit(number)
+            else setDraft(String(value))
+          },
+        }),
+      )
+    }
+
+    /**
      * Notification settings page inside Settings → Plugins.
      * @param {object} props - slot props plus the lazy remote resolver and translator.
      */
@@ -296,24 +381,18 @@ window.__ModuleLoader__.load({
       const status = typeof values.status === 'string' ? values.status : ''
       const details = typeof values.details === 'string' ? values.details : ''
       const enabled = values.enabled !== false
+      const quietMode = values.finishQuiet === 'off' || values.finishQuiet === 'focused' || values.finishQuiet === 'idle'
+        ? values.finishQuiet
+        : values.idleOnly === true ? 'idle' : values.skipWhenFocused === false ? 'off' : 'focused'
+      const switchValue = entry => (entry.defaultOn === false
+        ? values[entry.key] === true
+        : values[entry.key] !== false)
 
       return h('div', { style: styles.wrap },
         h('div', { style: styles.card },
           h('div', { style: styles.label }, t('labelStatus')),
           h('div', { style: styles.status }, status === '' ? t('statusEmpty') : status),
           details === '' ? null : h('div', { style: styles.detail }, details),
-        ),
-        h('div', { style: styles.card },
-          h('div', { style: styles.label }, t('labelMoments')),
-          ...SWITCHES.map(entry => h(Switch, {
-            key: entry.key,
-            name: t(entry.nameKey),
-            hint: t(entry.hintKey),
-            value: values[entry.key] !== false,
-            disabled: busy,
-            t,
-            onToggle: () => void write({ [entry.key]: values[entry.key] === false }),
-          })),
         ),
         h('div', { style: styles.row },
           h('button', {
@@ -341,6 +420,76 @@ window.__ModuleLoader__.load({
             disabled: busy,
             onClick: () => void load(),
           }, t('buttonRefresh')),
+        ),
+        h('div', { style: styles.card },
+          h('div', { style: styles.label }, t('labelMoments')),
+          ...SWITCHES.map(entry => h(Switch, {
+            key: entry.key,
+            name: t(entry.nameKey),
+            hint: t(entry.hintKey),
+            value: switchValue(entry),
+            disabled: busy,
+            t,
+            onToggle: () => void write({ [entry.key]: !switchValue(entry) }),
+          })),
+        ),
+        h('div', { style: styles.card },
+          h('div', { style: styles.label }, t('labelFinishQuiet')),
+          h('div', { style: styles.fieldRow },
+            h('div', { style: styles.fieldText },
+              h('div', { style: styles.name }, t('labelFinishQuiet')),
+              h('div', { style: styles.hint }, t('quietIdle')),
+            ),
+            h('select', {
+              style: styles.select,
+              value: quietMode,
+              disabled: busy,
+              onChange: event => void write({ finishQuiet: event.target.value }),
+            },
+              h('option', { value: 'off' }, t('quietOff')),
+              h('option', { value: 'focused' }, t('quietFocused')),
+              h('option', { value: 'idle' }, t('quietIdle')),
+            ),
+          ),
+        ),
+        h('div', { style: styles.card },
+          h('div', { style: styles.label }, t('labelThresholds')),
+          h(NumberField, {
+            label: t('idleSecondsLabel'),
+            hint: t('idleSecondsHint'),
+            value: Number(values.idleSeconds ?? 60),
+            min: 15,
+            max: 3600,
+            disabled: busy,
+            onCommit: value => void write({ idleSeconds: value }),
+          }),
+          h(NumberField, {
+            label: t('finishCoalesceLabel'),
+            hint: t('finishCoalesceHint'),
+            value: Math.round(Number(values.finishCoalesceMs ?? 4000) / 1000),
+            min: 1,
+            max: 30,
+            disabled: busy,
+            onCommit: value => void write({ finishCoalesceMs: Math.round(value * 1000) }),
+          }),
+          h(NumberField, {
+            label: t('errorQuietLabel'),
+            hint: t('errorQuietHint'),
+            value: Number(values.errorSessionQuietMinutes ?? 5),
+            min: 1,
+            max: 60,
+            disabled: busy,
+            onCommit: value => void write({ errorSessionQuietMinutes: value }),
+          }),
+          h(NumberField, {
+            label: t('errorMaxLabel'),
+            hint: t('errorMaxHint'),
+            value: Number(values.errorGlobalMax ?? 3),
+            min: 1,
+            max: 20,
+            disabled: busy,
+            onCommit: value => void write({ errorGlobalMax: value }),
+          }),
         ),
         h('div', { style: styles.hint }, t('hintBanner')),
         enabled ? null : h('div', { style: styles.hint }, t('hintMasterOff')),

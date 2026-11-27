@@ -8,6 +8,9 @@ const fmt = (template, variables = {}) => String(template).replace(/\{([a-zA-Z]+
 
 const t = {
   notifyFinishTitle: 'DSH 回合完成',
+  finishPrivateSubtitle: '一个会话',
+  finishPrivateBody: '一个会话已跑完，用时 {duration}。回到 DSH 查看结果。',
+  finishBatchPrivateBody: '{count} 个会话已跑完，回到 DSH 查看结果。',
   finishBody: '{label} 已跑完，用时 {duration}。回到 DSH 查看结果。',
   finishBatchSubtitle: '{count} 个会话',
   finishBatchBody: '{labels} 已跑完，回到 DSH 查看结果。',
@@ -51,14 +54,30 @@ test('more than three distinct labels become an ellipsis summary', () => {
 })
 
 test('idle mode skips below the threshold and allows at it', () => {
-  const base = { idleOnly: true, idleSeconds: 59, idleThreshold: 60, focused: true, skipWhenFocused: true }
+  const base = { mode: 'idle', idleSeconds: 59, idleThreshold: 60, focused: true }
   assert.equal(finishSkipReason(base), 'idle')
   assert.equal(finishSkipReason({ ...base, idleSeconds: 60 }), null)
 })
 
 test('focus mode only skips while DSH is frontmost', () => {
-  const base = { idleOnly: false, idleSeconds: 0, idleThreshold: 60, focused: true, skipWhenFocused: true }
+  const base = { mode: 'focused', idleSeconds: 0, idleThreshold: 60, focused: true }
   assert.equal(finishSkipReason(base), 'focused')
   assert.equal(finishSkipReason({ ...base, focused: false }), null)
-  assert.equal(finishSkipReason({ ...base, skipWhenFocused: false }), null)
+  assert.equal(finishSkipReason({ ...base, mode: 'off' }), null)
+})
+
+test('redacted copy hides labels and counts the batch', () => {
+  const single = finishContent(
+    [{ label: 'secret-project', startedAt: 0, endedAt: 5000 }],
+    { t, fmt, language: 'zh', formatDuration, redact: true },
+  )
+  assert.equal(single.subtitle, '一个会话')
+  assert.equal(single.body, '一个会话已跑完，用时 5 秒。回到 DSH 查看结果。')
+
+  const batch = finishContent(
+    [{ label: 'a', startedAt: 0, endedAt: 1000 }, { label: 'b', startedAt: 0, endedAt: 1000 }],
+    { t, fmt, language: 'zh', formatDuration, redact: true },
+  )
+  assert.equal(batch.subtitle, '2 个会话')
+  assert.equal(batch.body, '2 个会话已跑完，回到 DSH 查看结果。')
 })
