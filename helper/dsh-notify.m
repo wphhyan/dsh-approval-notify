@@ -66,12 +66,17 @@ static NSString *const kDefaultBundleId = @"com.deepseek.dsh";
 - (void)userNotificationCenter:(UNUserNotificationCenter *)center
     didReceiveNotificationResponse:(UNNotificationResponse *)response
              withCompletionHandler:(void (^)(void))completionHandler {
-  [self activateTarget];
   completionHandler();
-  // Give the framework a moment to finish the response before the app goes away.
-  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)),
+  // The system foregrounds this helper for a banner click right after the
+  // response. Wait for that switch, then put DSH in front so the user ends up
+  // in DSH rather than in the invisible helper.
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)),
                  dispatch_get_main_queue(), ^{
-    exit(0);
+    [self activateTarget];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.45 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+      exit(0);
+    });
   });
 }
 
@@ -84,6 +89,12 @@ static NSString *valueAfter(NSArray<NSString *> *args, NSUInteger *index, NSStri
   if (*index + 1 >= args.count) return nil;
   *index += 1;
   return args[*index];
+}
+
+/// Write the delivery result where the launching process can read it.
+static void writeReport(NSString *path, NSString *line) {
+  if ([path length] == 0) return;
+  [line writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
 }
 
 /// Keep the run loop alive briefly so a completion handler can fire.
@@ -114,6 +125,7 @@ int main(int argc, const char *argv[]) {
     NSString *focusUrl = nil;
     NSString *url = nil;
     NSString *identifier = nil;
+    NSString *reportPath = nil;
     NSString *activateNow = nil;
     double timeout = 120.0;
 
@@ -127,6 +139,7 @@ int main(int argc, const char *argv[]) {
       else if ((value = valueAfter(args, &i, @"--focus-url")) != nil) focusUrl = value;
       else if ((value = valueAfter(args, &i, @"--url")) != nil) url = value;
       else if ((value = valueAfter(args, &i, @"--identifier")) != nil) identifier = value;
+      else if ((value = valueAfter(args, &i, @"--report")) != nil) reportPath = value;
       else if ((value = valueAfter(args, &i, @"--timeout")) != nil) timeout = [value doubleValue];
       else if ([args[i] isEqualToString:@"--activate-now"]) activateNow = @"1";
     }
@@ -224,8 +237,10 @@ int main(int argc, const char *argv[]) {
       [center addNotificationRequest:request withCompletionHandler:^(NSError *error) {
         if (error != nil) {
           fprintf(stderr, "error %s\n", error.localizedDescription.UTF8String ?: "unknown");
+          writeReport(reportPath, [NSString stringWithFormat:@"error %@", error.localizedDescription ?: @"unknown"]);
           exit(3);
         }
+        writeReport(reportPath, @"ok");
         // The parent reads this line and stops waiting; the process stays alive
         // afterwards so the click can still reach this delegate.
         fprintf(stdout, "ok\n");
@@ -240,11 +255,13 @@ int main(int argc, const char *argv[]) {
       if (settings.authorizationStatus == UNAuthorizationStatusDenied) {
         fprintf(stderr, "denied\n");
         fflush(stderr);
+        writeReport(reportPath, @"denied");
         exit(2);
       }
       if (settings.authorizationStatus == UNAuthorizationStatusNotDetermined) {
         fprintf(stderr, "unauthorized\n");
         fflush(stderr);
+        writeReport(reportPath, @"unauthorized");
         exit(4);
       }
       post();
