@@ -504,10 +504,17 @@ window.__ModuleLoader__.load({
     return {
       inject: ['slots'],
       apply(ctx) {
+        // `ctx.remote` is a service property and throws unless injected; the
+        // optional `ctx.get` route is the only safe way to read it from a
+        // plugin that did not declare it as a hard dependency.
         const remote = () => {
-          if (ctx.remote !== undefined) return ctx.remote
-          if (typeof ctx.get === 'function') return ctx.get('remote')
-          return undefined
+          try {
+            if (typeof ctx.get === 'function') {
+              const service = ctx.get('remote')
+              if (service !== undefined) return service
+            }
+          } catch {}
+          try { return ctx.remote } catch { return undefined }
         }
 
         // Register the dictionary with the client locale service when it exists;
@@ -515,7 +522,10 @@ window.__ModuleLoader__.load({
         let t = fallback
         let locale
         try {
-          locale = ctx.locale ?? (typeof ctx.get === 'function' ? ctx.get('locale') : undefined)
+          locale = typeof ctx.get === 'function' ? ctx.get('locale') : undefined
+          if (locale === undefined) {
+            try { locale = ctx.locale } catch {}
+          }
           if (locale !== undefined && typeof locale.register === 'function') {
             const register = () => locale.register(NS, UI)
             if (typeof ctx.effect === 'function') ctx.effect(register)
