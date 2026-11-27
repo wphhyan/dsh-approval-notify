@@ -37,7 +37,7 @@ dsh plugin --profile <profile> add github:wphhyan/dsh-approval-notify
 - **该安静时安静**：可以按「DSH 在前台」跳过「完成」提醒，也可以切到「只在离开键盘时提醒」用系统空闲时间（满 60 秒）判断，浏览器打开 GUI 时更准；同一会话 5 秒内只有一条完成提醒；多个会话在 4 秒内同时结束会合并成一条（副标题「N 个会话」，计数按会话数累计）；「出错」5 分钟最多一条，每分钟都失败的定时任务刷不爆通知中心；同一 `callId` 3 秒内只提醒一次。
 - **设置页**在 **设置 → 插件 → 审批提醒**：十个开关（总开关、审批、提问、完成、出错、提示音、前台跳过、只在离开键盘时提醒、点击切回、定时任务也提醒）、四类计数、最近一次事件，以及五个按钮——**请求通知授权**、**发送测试通知**、**自检**、**打开系统通知设置**、**刷新**。
 - **给 Agent 的工具**：`dsh_approval_notify`，支持 `status`、`test`、`diagnose`；旧名 `approval_notify` 保留为别名，已有提示词不用改。
-- **文案跟随界面语言**：设置页通过 DSH 的 locale 服务注册中英文字典；Host 侧从页面写入的 `clientLocale` 选择通知、状态行与工具输出的语言。
+- **文案跟随界面语言**：设置页通过 DSH 的 locale 服务注册中英文字典，切换语言即时生效；Host 侧从页面写入的 `clientLocale` 选择通知、状态行与工具输出的语言（中文用中文，其他语言用英文）。
 
 ## 送达与限制
 
@@ -45,6 +45,7 @@ dsh plugin --profile <profile> add github:wphhyan/dsh-approval-notify
 - **定时任务默认不提醒**：`dsh-automation-session-*` 这类由定时任务创建的会话不发「完成」「出错」通知，避免每分钟跑一次的坏任务刷屏；需要时打开「定时任务也提醒」。
 - **点击切回**关闭（或 helper 缺失）时，退回 `osascript display notification`：无需授权，但 macOS 会把横幅归到 **「脚本编辑器 / Script Editor」** 名下，且不能点击。这条通道始终保留，是兜底。
 - 两种通道都需要系统通知权限与未开启专注模式；被静音时都会静默丢弃。
+- **helper 会复制到稳定目录**：首次使用时复制到 `~/Library/Application Support/dsh-approval-notify/DSHNotify.app` 并向 LaunchServices 注册，插件升级不会让旧横幅点不开；卸载插件后旧横幅仍会失效。
 - **点击只回到 DSH，不会跳到具体会话**：DSH 0.2.2-rc.5 的桌面端只处理 `dsh://open`，Web 客户端也没有会话级 URL 路由，所以没有可用的会话深链接。
 - 退出码 0 只代表通知服务**接受了请求**，不代表你看见了：专注模式、在系统设置里把「脚本编辑器」静音、锁屏，都会静默丢弃。插件如实写"已提交"，不假装"已送达"。
 - 仅 macOS。其他平台上工具会报告渠道不可用。
@@ -73,7 +74,7 @@ npm run check   # node --check 语法检查
 npm test        # node:test：纯函数、状态文档、清单与 helper 校验
 ```
 
-`helper/build.sh` 用 clang 重新编译 universal 的 `DSH Notify`（需要 macOS 与 Xcode 命令行工具）。CI 在 Ubuntu 上跑语法检查、单元测试、以及 `npm pack` 的发布文件清单校验。
+`helper/build.sh` 用 clang 重新编译 universal 的 `DSH Notify`（需要 macOS 与 Xcode 命令行工具），并把 `package.json` 版本写进 helper 的 `CFBundleShortVersionString`。CI 在 Ubuntu 上跑语法检查、单元测试与 `npm pack` 发布文件清单校验，另有一个 macOS job 负责构建 helper、校验签名/版本并冒烟测试 `--status`。
 
 helper 的调试模式：`--status` 打印通知授权状态（0 未决定 / 1 拒绝 / 2 允许），`--request` 请求一次授权，`--activate-now --focus-url dsh://open` 只做窗口聚焦，无参数启动等同于点击一条过期通知；投递时 Web GUI 地址通过环境变量 `DSH_NOTIFY_URL` 传入，不出现在进程参数里。
 

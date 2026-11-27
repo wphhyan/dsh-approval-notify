@@ -35,6 +35,7 @@ test('client dictionaries stay aligned across languages', () => {
   }
 })
 
-test('unknown language falls back to Chinese', () => {
-  assert.equal(texts('fr').statusNever, texts('zh').statusNever)
+test('non-Chinese languages fall back to English', () => {
+  assert.equal(texts('fr').statusNever, texts('en').statusNever)
+  assert.equal(texts('ja').statusNever, texts('en').statusNever)
 })

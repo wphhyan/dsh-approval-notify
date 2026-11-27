@@ -33,6 +33,7 @@ jobs:
             'lib/state.js',
             'lib/system.js',
             'lib/messages.js',
+            'lib/finish.js',
             'cordis.patch.yml',
             'icon.svg',
             'locale/zh.json',
@@ -50,3 +51,21 @@ jobs:
           }
           console.log(`${files.length} files packed, all required files present`)
           NODE
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build the helper
+        run: bash helper/build.sh
+      - name: Verify signature and version
+        run: |
+          codesign -dv --verbose=2 helper/DSHNotify.app
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' helper/DSHNotify.app/Contents/Info.plist)" = "$(node -p "require('./package.json').version")"
+      - name: Smoke-test the helper status command
+        run: |
+          set +e
+          helper/DSHNotify.app/Contents/MacOS/dsh-notify --status
+          echo "status exit=$?"

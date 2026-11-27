@@ -17,9 +17,10 @@
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
-import { TONES, deliver, helperAuthorization, helperAvailable, isSupported, requestAuthorization, truncate } from './lib/notify.js'
+import { TONES, deliver, helperAuthorization, helperAvailable, isSupported, refreshHelperAuthorization, requestAuthorization, truncate } from './lib/notify.js'
 import { readState, trace, writeState } from './lib/state.js'
 import { fmt, texts } from './lib/messages.js'
+import { finishContent, finishSkipReason } from './lib/finish.js'
 import { DSH_BUNDLE_ID, dshIsFrontmost, frontmost, idleSeconds, openNotificationSettings } from './lib/system.js'
 
 export const name = 'approval-notify'
@@ -280,8 +281,8 @@ export function apply(ctx, config) {
     }
   }
 
-  /** Active UI language reported by the client half. */
-  const language = () => (read('clientLocale') === 'en' ? 'en' : 'zh')
+  /** Active UI language reported by the client half; every non-Chinese locale uses English. */
+  const language = () => (read('clientLocale') === 'zh' ? 'zh' : 'en')
 
   /** Message table for the active language. */
   const text = () => texts(language())
@@ -469,10 +470,12 @@ export function apply(ctx, config) {
     const t = text()
     const tool = typeof request?.toolName === 'string' && request.toolName !== '' ? request.toolName : t.genericTool
     const display = request?.displayReason
-    const reason = typeof display?.zh === 'string' && display.zh !== ''
-      ? display.zh
-      : typeof display?.en === 'string' && display.en !== ''
-        ? display.en
+    const preferred = language() === 'zh' ? display?.zh : display?.en
+    const fallback = language() === 'zh' ? display?.en : display?.zh
+    const reason = typeof preferred === 'string' && preferred !== ''
+      ? preferred
+      : typeof fallback === 'string' && fallback !== ''
+        ? fallback
         : typeof request?.reason === 'string' ? request.reason : ''
     const body = reason === '' ? fmt(t.notifyApprovalBody, { tool }) : truncate(reason)
     await send('审批', { title: t.notifyApprovalTitle, subtitle: truncate(tool, 60), body }, TONES.approval)
@@ -528,39 +531,32 @@ export function apply(ctx, config) {
     finishBatch = []
     if (read('enabled') !== true || read('finishes') !== true) return
     const t = text()
-    if (read('idleOnly') === true) {
-      const idle = idleSeconds()
-      if (idle < IDLE_SECONDS) {
-        lastSkip = fmt(t.skipIdle, { idle: Math.round(idle) })
-        return
-      }
-    } else if (read('skipWhenFocused') === true && dshIsFrontmost()) {
+    const idleOnly = read('idleOnly') === true
+    const idle = idleOnly ? idleSeconds() : 0
+    const skip = finishSkipReason({
+      idleOnly,
+      idleSeconds: idle,
+      idleThreshold: IDLE_SECONDS,
+      focused: idleOnly ? false : dshIsFrontmost(),
+      skipWhenFocused: read('skipWhenFocused') === true,
+    })
+    if (skip === 'idle') {
+      lastSkip = fmt(t.skipIdle, { idle: Math.round(idle) })
+      return
+    }
+    if (skip === 'focused') {
       lastSkip = fmt(t.skipFocused, { time: clock(new Date().toISOString()) })
       return
     }
     lastSkip = ''
-    if (items.length === 1) {
-      const item = items[0]
-      void send('完成', {
-        title: t.notifyFinishTitle,
-        subtitle: truncate(item.label, 60),
-        body: fmt(t.finishBody, {
-          label: item.label,
-          duration: duration(item.endedAt - item.startedAt, t),
-        }),
-      }, TONES.finish).catch(error => trace(`finish notify failed: ${error?.stack ?? String(error)}`))
-      return
-    }
-    const labels = [...new Set(items.map(item => item.label))]
-    const separator = language() === 'en' ? ', ' : '、'
-    const body = labels.length > 3
-      ? fmt(t.finishBatchBodyMore, { labels: labels.slice(0, 3).join(separator), count: items.length })
-      : fmt(t.finishBatchBody, { labels: labels.join(separator) })
-    void send('完成', {
-      title: t.notifyFinishTitle,
-      subtitle: fmt(t.finishBatchSubtitle, { count: items.length }),
-      body: truncate(body),
-    }, TONES.finish, items.length).catch(error => trace(`finish notify failed: ${error?.stack ?? String(error)}`))
+    const content = finishContent(items, {
+      t,
+      fmt,
+      language: language(),
+      formatDuration: milliseconds => duration(milliseconds, t),
+    })
+    void send('完成', content, TONES.finish, content.count)
+      .catch(error => trace(`finish notify failed: ${error?.stack ?? String(error)}`))
   }
 
   /**
@@ -681,6 +677,11 @@ export function apply(ctx, config) {
     trace(`agent list unavailable: ${error?.message ?? String(error)}`)
   }
   trace(`activated on ${process.platform}; approvals=${String(state.approvals)} questions=${String(state.questions)} finishes=${String(state.finishes)} errors=${String(state.errors)}`)
+  // Warm the cached authorization without blocking activation; the first status
+  // publish follows once the helper answers.
+  void refreshHelperAuthorization()
+    .then(() => publish(undefined, { force: true }))
+    .catch(error => trace(`authorization probe failed: ${error?.message ?? String(error)}`))
 
   /** One settings page owns this plugin's form, so the automatic one stays off. */
   ctx.inject(['settings'], child => {
@@ -732,6 +733,7 @@ export function apply(ctx, config) {
     }
     busy = true
     try {
+      await refreshHelperAuthorization()
       if (read('testNow') === true) {
         const outcome = await runTest()
         await writeConfig({ testNow: false, status: `${statusLine()} ${outcome.message}`, details: detailLine() })
@@ -754,7 +756,7 @@ export function apply(ctx, config) {
         if (started) {
           for (let attempt = 0; attempt < 6; attempt += 1) {
             await new Promise(resolve => setTimeout(resolve, 800))
-            authorization = helperAuthorization()
+            authorization = await refreshHelperAuthorization()
             if (authorization === 'authorized' || authorization === 'denied') break
           }
         }

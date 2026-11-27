@@ -184,7 +184,9 @@ window.__ModuleLoader__.load({
     }
 
     /** Fallback translator used before or without the locale service. */
-    const fallback = key => UI.zh[key] ?? key
+    const fallbackLanguage = String(typeof navigator === 'undefined' ? '' : navigator.language ?? '')
+      .toLowerCase().startsWith('zh') ? 'zh' : 'en'
+    const fallback = key => UI[fallbackLanguage][key] ?? key
 
     /**
      * Read this plugin's settings namespace through the client settings channel.
@@ -243,10 +245,19 @@ window.__ModuleLoader__.load({
      * Notification settings page inside Settings → Plugins.
      * @param {object} props - slot props plus the lazy remote resolver and translator.
      */
-    function PageView({ remote, t }) {
+    function PageView({ remote, t, locale }) {
       const [view, setView] = useState(null)
       const [error, setError] = useState(null)
       const [busy, setBusy] = useState(false)
+      const [, setLocaleRevision] = useState(0)
+
+      // `bind()` reads the active locale at call time, but React needs a
+      // subscription to re-render the mounted page when the user switches
+      // languages in Settings → General.
+      useEffect(() => {
+        if (locale === undefined || typeof locale.subscribe !== 'function') return undefined
+        return locale.subscribe(() => setLocaleRevision(value => value + 1))
+      }, [locale])
 
       const load = useCallback(
         createLoader(remote, next => { setView(next); setError(null) }, message => setError(message), t),
@@ -353,8 +364,9 @@ window.__ModuleLoader__.load({
         // Register the dictionary with the client locale service when it exists;
         // otherwise the page keeps the Chinese baseline.
         let t = fallback
+        let locale
         try {
-          const locale = ctx.locale ?? (typeof ctx.get === 'function' ? ctx.get('locale') : undefined)
+          locale = ctx.locale ?? (typeof ctx.get === 'function' ? ctx.get('locale') : undefined)
           if (locale !== undefined && typeof locale.register === 'function') {
             const register = () => locale.register(NS, UI)
             if (typeof ctx.effect === 'function') ctx.effect(register)
@@ -376,13 +388,18 @@ window.__ModuleLoader__.load({
             if (settings === undefined || typeof settings.describe !== 'function'
               || typeof settings.update !== 'function') return
             const language = String(document.documentElement?.lang ?? navigator.language ?? '')
-            const next = language.toLowerCase().startsWith('en') ? 'en' : 'zh'
+            const next = language.toLowerCase().startsWith('zh') ? 'zh' : 'en'
             const described = await settings.describe()
             const current = (described?.namespaces ?? []).find(entry => entry?.ns === NS)?.value?.clientLocale
             if (current !== next) await settings.update(NS, { clientLocale: next })
           } catch {}
         }
         reportLocale()
+        try {
+          if (locale !== undefined && typeof locale.subscribe === 'function' && typeof ctx.effect === 'function') {
+            ctx.effect(() => locale.subscribe(() => { void reportLocale() }))
+          }
+        } catch {}
         try {
           if (typeof MutationObserver === 'function' && typeof ctx.effect === 'function') {
             const observer = new MutationObserver(reportLocale)
@@ -391,7 +408,7 @@ window.__ModuleLoader__.load({
           }
         } catch {}
 
-        const Page = () => h(PageView, { remote, t })
+        const Page = () => h(PageView, { remote, t, locale })
         ctx.slots.inject('settings.plugins.tab', () => ctx.slots.register({
           name: 'settings.plugins.tab',
           id: 'approval-notify',

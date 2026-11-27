@@ -63,6 +63,10 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
+VERSION="$(node -p "require('../package.json').version" 2>/dev/null || echo 1.0)"
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
+echo "helper version $VERSION"
+
 codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || echo "warning: ad-hoc codesign failed; the helper still runs unsigned"
 
 rm -rf build
